@@ -16,6 +16,7 @@ def isolate_engine_error_logs(tmp_path, monkeypatch):
     import app.adapters.ratelimit as ratelimit
     import app.sources.product_hunt as product_hunt
     import app.sources.web_search as web_search
+    import app.sources.x as x_source
 
     for module in (claude, codex, logging, ratelimit, product_hunt, web_search):
         monkeypatch.setattr(module, "DEFAULT_LOG_ROOT", log_root, raising=False)
@@ -40,6 +41,10 @@ def isolate_engine_error_logs(tmp_path, monkeypatch):
     # originals 兜底（本行在 originals 抓取之后，改的是同一份 __kwdefaults__）。
     if web_search.search.__kwdefaults__ and "env_path" in web_search.search.__kwdefaults__:
         web_search.search.__kwdefaults__["env_path"] = tmp_path / "no-such-owli.env"
+    # §SRC-4：x.py 钱闸六键缺失时会回退读同一份 ~/.owli/.env。把它也指到不存在的
+    # 文件，否则「缺配置时受控不可用」这类用例的结论会跟着开发机上有没有真实
+    # OWLI_X_* 变——同一份代码在两台机器上一红一绿。直接测回退路径的用例自带 env_path=。
+    monkeypatch.setattr(x_source, "_ENV_PATH", tmp_path / "no-such-owli.env")
     yield
     for function, defaults in originals.items():
         function.__kwdefaults__ = defaults

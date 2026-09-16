@@ -156,8 +156,14 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: 凭证与钱闸配置文件；单元套件在 conftest 里把它指到不存在的 tmp 路径，
+#: 保证「缺配置」类用例的结论不随开发机上的真实文件改变（09-16 一条用例被真实
+#: OWLI_X_* 污染成 completed，调度复跑抓到）。
+_ENV_PATH = Path.home() / ".owli" / ".env"
+
+
 def _env_file_path(env_path: str | Path | None) -> Path:
-    return Path(env_path) if env_path is not None else Path.home() / ".owli" / ".env"
+    return Path(env_path) if env_path is not None else _ENV_PATH
 
 
 def _parse_env_lines(lines: list[str]) -> dict[str, str]:

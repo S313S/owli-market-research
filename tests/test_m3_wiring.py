@@ -788,8 +788,16 @@ def test_真实_Claude_Codex_适配器消费注册源并注入_source_MCP(
     assert "hacker_news" in joined
 
 
-def test_注册表_source_x_统一两参入口缺配置时受控不可用() -> None:
+def test_注册表_source_x_统一两参入口缺配置时受控不可用(monkeypatch) -> None:
     from app.sources.registry import get_tool
+
+    # 「缺配置」是这条用例的前提，不能靠开发机碰巧没设：进程环境里的六键清掉，
+    # 回退读的 .env 已由 conftest 指到不存在的文件。断言不动。
+    for name in (
+        "OWLI_X_WEEKLY_BUDGET_USD", "OWLI_X_BALANCE_USD", "OWLI_X_BILLING_CYCLE_CAP_USD",
+        "OWLI_X_BILLING_CYCLE_SPENT_USD", "OWLI_X_PRICE_PER_READ_USD", "OWLI_X_USAGE_DB_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
     events: list[dict] = []
     result = get_tool("source.x")("飞书", "7d", on_event=events.append)
