@@ -134,11 +134,12 @@ def test_等级闸_AB_级放行():
     assert lowgrade_quotes(QUOTED_OK, {1: "B"}) == []
 
 
-def test_等级闸_C_级必须退回():
-    """缺陷 9：正文自己写明 S39 是 C 级不得作原声，另一段又拿 S39 当案例。"""
-    problems = lowgrade_quotes(QUOTED_OK, {1: "C"})
+def test_等级闸_C_级放行_D_级必须退回():
+    """缺陷 9 时只许 A/B；§RPT-5 起 C 级放行（标等级归 `unlabeled_quotes` 管），D 仍退回。"""
+    assert lowgrade_quotes(QUOTED_OK, {1: "C"}) == []
+    problems = lowgrade_quotes(QUOTED_OK, {1: "D"})
     assert len(problems) == 1
-    assert "S01（C 级）" in problems[0]
+    assert "S01（D 级）" in problems[0]
 
 
 def test_等级闸_未评级与_D_级同样退回():
@@ -146,10 +147,10 @@ def test_等级闸_未评级与_D_级同样退回():
     assert lowgrade_quotes(QUOTED_OK, {})
 
 
-def test_等级闸_块里混着一条_C_级也退回():
-    """一块里 A 和 C 都引了，C 那条照样不许作原声。"""
+def test_等级闸_块里混着一条_D_级也退回():
+    """一块里 A 和 D 都引了，D 那条照样不许作原声。"""
     block = f"> {ORIGINAL}\n> —— 微博 · 等级 A [S01][S02]\n"
-    assert lowgrade_quotes(block, {1: "A", 2: "C"})
+    assert lowgrade_quotes(block, {1: "A", 2: "D"})
 
 
 def test_quote_corpus_收编码表摘出的原声():
@@ -164,7 +165,7 @@ import asyncio  # noqa: E402
 
 
 class _GateStore:
-    """两条证据：S01 是 A 级（原声合法），S02 是 C 级（不得作原声）。"""
+    """两条证据：S01 是 A 级（原声合法），S02 是 D 级（不得作原声；§RPT-5 起 C 级已放行）。"""
 
     def get_report(self, rid):
         return {"id": rid, "title": "T", "research_question": "q", "plan_snapshot": {},
@@ -175,7 +176,7 @@ class _GateStore:
                  "title": "帖一", "content_excerpt": ORIGINAL, "grade": "A",
                  "published_at": None, "extra": "{}"},
                 {"id": "ev-2", "platform": "weibo", "kind": "post", "citation_no": 2,
-                 "title": "帖二", "content_excerpt": "随便一句", "grade": "C",
+                 "title": "帖二", "content_excerpt": "随便一句", "grade": "D",
                  "published_at": None, "extra": "{}"}]
 
 
@@ -217,12 +218,12 @@ def test_改过字的原声被闸退回(tmp_path):
     assert result["attempts"] == 2, "改过字要给写手一次重写机会，不是一次就判死"
 
 
-def test_引_C_级作原声被闸退回(tmp_path):
-    """判据 3：造一份拿 C 级角标作原声的产物，`polish()` 必须判红。"""
-    block = f"> {ORIGINAL}\n> —— 微博 · 等级 C [S02]\n"
+def test_引_D_级作原声被闸退回(tmp_path):
+    """判据 3：造一份拿 D 级角标作原声的产物，`polish()` 必须判红（C 级见 test_rpt5）。"""
+    block = f"> {ORIGINAL}\n> —— 微博 · 等级 D [S02]\n"
     result = _polish(tmp_path, block)
     assert result["status"] == "failed"
-    assert any("S02（C 级）" in e for e in result["errors"]), result["errors"]
+    assert any("S02（D 级）" in e for e in result["errors"]), result["errors"]
 
 
 def test_把握度那句引用块不是原声_不上闸():

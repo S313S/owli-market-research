@@ -53,15 +53,16 @@ def _store(tmp_path: Path):
     return store
 
 
-def test_引得了的口径只收池内AB级UGC(tmp_path: Path) -> None:
+def test_引得了的口径只收池内ABC级UGC(tmp_path: Path) -> None:
+    """§RPT-3 时只收 A/B；§RPT-5 放宽到 C（评论天花板是 C），D 与池外仍不编。"""
     from app.reliability.coding import pending_quotable, quotable_targets
 
     store = _store(tmp_path)
     rows = store.list_evidence("r-cd")
-    assert sorted(r["id"] for r in quotable_targets(rows)) == ["ev-pa", "ev-pb"]
+    assert sorted(r["id"] for r in quotable_targets(rows)) == ["ev-pa", "ev-pb", "ev-pc"]
     assert sorted(r["id"] for r in quotable_targets(rows, force=True)) == [
-        "ev-done", "ev-pa", "ev-pb"]
-    assert pending_quotable(store, "r-cd") == 2
+        "ev-done", "ev-pa", "ev-pb", "ev-pc"]
+    assert pending_quotable(store, "r-cd") == 3
 
 
 def test_主链路入口只编引得了的行并记账外费用路径(tmp_path: Path) -> None:
@@ -71,9 +72,9 @@ def test_主链路入口只编引得了的行并记账外费用路径(tmp_path: 
     engine = _CodingEngine()
     result = asyncio.run(code_quotable(store, "r-cd", adapter=engine,
                                        runs_root=tmp_path / "runs"))
-    assert (result.targets, result.coded, result.failed, result.already) == (3, 2, 0, 1)
+    assert (result.targets, result.coded, result.failed, result.already) == (4, 3, 0, 1)
     coded = {r["id"] for r in store.list_evidence("r-cd") if is_coded(r)}
-    assert coded == {"ev-pa", "ev-pb", "ev-done"}, "池外、C 级、非 UGC 一条都不该编"
+    assert coded == {"ev-pa", "ev-pb", "ev-pc", "ev-done"}, "池外、非 UGC 一条都不该编（§RPT-5 起 C 级要编）"
 
 
 def test_批并发真的同时在飞_脚本默认仍串行(tmp_path: Path) -> None:
@@ -145,7 +146,7 @@ def test_收尾期回填之后自动编码并发事件(tmp_path: Path) -> None:
     assert pending_quotable(store, "r-cd") == 0
     types = [e["type"] for e in events]
     assert types[0] == "ugc_coding_started" and types[-1] == "ugc_coding_done"
-    assert events[-1]["data"]["coded"] == 2 and not fake._backfill_runs
+    assert events[-1]["data"]["coded"] == 3 and not fake._backfill_runs
     # 挂点位置：回填之后、失败清单与 finish_report 之前。
     source = inspect.getsource(RuntimeCoordinator._finalize_if_terminal)
     assert (source.index("_backfill_ratings_on_finalize(research_id)")
