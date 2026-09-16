@@ -115,6 +115,44 @@ def test_已按代表性评过的行不重复重评(tmp_path: Path) -> None:
     assert after["ev-fresh"] == before["ev-fresh"]
 
 
+def test_只为换尺子入选的行_后四维连分带理由原样(tmp_path: Path) -> None:
+    """真跑语料里评级章的「交叉0:单条个人吐槽」不带 `extra.crossref_verdict`。
+
+    整条重算路要 `extra` 里有血缘簇才给交叉维打分，没有就判「缺断言血缘簇」写
+    NULL——restale 那批一进来，交叉维连着 grade 一起没了，比病还重。
+    """
+
+    from tests.test_m4fork_followup import _database
+
+    _, store = _database(tmp_path)
+    store.create_report(id="r-d073", title="代表性", research_question="重评",
+                        created_at="2026-09-16T00:00:00Z")
+    bare = {"authority_kind": "anonymous_or_unverifiable",
+            "content_kind": "user_opinion", "interest_relation": "arms_length"}
+    rows = []
+    for index in range(20):
+        row = _rated("r-d073", f"s{index:03d}", platform="xhs",
+                     liked=index * 10, notes=_STALE_NOTES)
+        row["extra"] = dict(bare)          # 没有 crossref_verdict / claim_ids
+        rows.append(row)
+    store.upsert_evidence_batch(rows)
+    _, result, before, after = _run(store, tmp_path)
+
+    assert result.attempted == 20 and result.failed == 0
+    for identity in (f"ev-s{index:03d}" for index in range(20)):
+        old, new = before[identity], after[identity]
+        assert new["rating_notes"].startswith("代表性"), "第一维该换尺子"
+        assert new["score_crossref"] == old["score_crossref"] == 0, (
+            f"{identity} 交叉维被重算路抹成 {new['score_crossref']}"
+        )
+        assert new["grade"] is not None, f"{identity} 掉出了评级"
+        for field in ("score_freshness", "score_crossref",
+                      "score_completeness", "score_independence"):
+            assert new[field] == old[field], (identity, field)
+        assert new["rating_notes"].split(" · ", 1)[1] == \
+            old["rating_notes"].split(" · ", 1)[1], "后四段理由必须逐字不变"
+
+
 def test_没有分位的行不进重评(tmp_path: Path) -> None:
     """池不足 20 条就没有分位，硬评出来的「代表性」是假的——整行不动。"""
 
