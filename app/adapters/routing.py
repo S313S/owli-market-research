@@ -41,6 +41,14 @@ _DEFAULT_ENGINES = {
 }
 _ENGINES = frozenset({"claude", "codex"})
 _PLANNING_KINDS = frozenset({"planning", "goal_planning", "plan_arbitration"})
+#: D-074：引擎侧「这一家现在满了」。**换一家马上能跑**，所以它既不是「这家坏了」
+#: （⛔ 不进 codex.py 的 `_INFRASTRUCTURE_MARKERS`——那条路判引擎不可用、直接抛），
+#: 也不是限流（⛔ 不起退避、不碰退避时钟：D-023 踩过借限流的时钟睡满五小时）。
+#: 只收本项目真出现过的措辞：2026-09-16 r-20271e8a5028 全库 24 处命中，全是 Codex 的
+#: 「Selected model is at capacity. Please try a different model.」。同族的
+#: `overloaded` / `server_overloaded` / `service unavailable` 在本项目转录里**一次都没出现过**，
+#: 没证据的不收——拿猜来的措辞去改真实路由，改错了没人量得出来。
+_CAPACITY_MARKERS = ("at capacity", "please try a different model")
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,9 @@ class RoutedAdapter:
         self._backoff_counts: dict[tuple[str, str], int] = {}
         self._backoff_causes: dict[tuple[str, str], str] = {}
         self._quota_gates: dict[str, asyncio.Event] = {}
+        # D-074：这一串连着的失败里，哪几家已经报过「满了」。⛔ 不是黑名单：
+        # 一旦有一轮没报容量就整条清掉（见 `run` 末尾），所以它不会把引擎永久下线。
+        self._capacity_engines: dict[str, set[str]] = {}
         self._manual_research_alternates: set[str] = set()
         self._manual_agent_alternates: dict[tuple[str, str], int] = {}
         self._agent_runs: dict[tuple[str, str], int] = {}
@@ -218,6 +229,39 @@ class RoutedAdapter:
             or "rateLimitInfo" in raw
         )
 
+    @staticmethod
+    def _is_capacity(event: Any) -> bool:
+        """D-074：这一条错误是不是「这一家现在满了」。
+
+        只按报文措辞判，不按引擎名判——两家哪天都可能这么说。必须是错误事件：
+        同一句话出现在正文里（写手复述报错）不算，那不是引擎在报自己的状态。
+        """
+
+        if not getattr(event, "is_error", False):
+            return False
+        text = str(getattr(event, "text", "") or "").casefold()
+        return any(marker in text for marker in _CAPACITY_MARKERS)
+
+    def _note_capacity(self, research_id: str, engine: str) -> str | None:
+        """记下这一家满了，并把后续尝试改派到另一家。返回改派到的引擎。
+
+        D-074 真机（09-16 r-20271e8a5028）：修前这类错误谁都不认，于是
+        `MAX_ATTEMPTS` 两次 attempt 全落在同一家满负荷的 Codex 上，片没写出来
+        ⇒ 片失败节不判 done ⇒ 整轮中止。改派走的是**现成的** `_route_overrides`
+        那条让路路（限流让路用的也是它），⛔ 不新开失败路径、不起退避。
+
+        两家都报过满了就**停在原地**：⛔ 不在两家之间来回倒——那只会把每一次重试
+        都变成一次换家，跑满重试次数，还是原来的失败路收场。
+        """
+
+        seen = self._capacity_engines.setdefault(research_id, set())
+        seen.add(engine)
+        alternate = self._alternate(engine)
+        if alternate in seen:
+            return None
+        self._route_overrides[research_id] = alternate
+        return alternate
+
     def _start_backoff(
         self, research_id: str, engine: str, event: Any
     ) -> float | None:
@@ -339,10 +383,19 @@ class RoutedAdapter:
                 cause=backoff_cause,
             ))
 
+        capacity_seen = False
+
         async def routed_event(event: Any) -> None:
+            nonlocal capacity_seen
             route_state = getattr(event, "route_state", None)
             state_value = getattr(route_state, "value", route_state)
             started_delay = None
+            # D-074：挡在最前面，且**不 return**——这条错误照常往下走事件管道，
+            # 只是顺手把后续尝试改派到另一家。规划期固定走 claude、看不见这个覆盖，
+            # 给它记一笔只会把别的任务无端赶去 codex，所以规划期不记。
+            if not planning and self._is_capacity(event):
+                capacity_seen = True
+                self._note_capacity(task.research_id, selected_engine)
             if state_value == "BACKOFF":
                 started_delay = self._start_backoff(
                     task.research_id, selected_engine, event
@@ -379,6 +432,11 @@ class RoutedAdapter:
             return result
         finally:
             self._active = None
+            # D-074：这一轮没人喊满，说明容量回来了——把「谁满过」的记性整条清掉。
+            # 不清的话，半小时前两家各满过一次，就再也不给这个研究让路了，
+            # 那等于把这类错误当成「引擎永久不可用」，正是本包⛔的那一条。
+            if not capacity_seen:
+                self._capacity_engines.pop(task.research_id, None)
 
     async def run_planning_segment(
         self,
