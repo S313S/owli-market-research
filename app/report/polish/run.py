@@ -808,7 +808,8 @@ def build_prompt(template: Template, data: Mapping[str, Any], report_text: str,
     objectives = "\n".join(f"- {g.get('objective')}" for g in data.get("objectives") or []
                            if g.get("objective"))
     verdicts = {"PASS": "多源互证", "CONFLICT": "多源冲突", "WEAK": "证据偏弱", "SINGLE": "单源孤证"}
-    # §RPT-3 货 2：A/B 级评论行在末尾多一栏「原话：…」（`tables.quote_prefix`，程序截取）。
+    # §RPT-3 货 2：引得了的评论行（A/B/C 级，§RPT-5 起含 C）在末尾多一栏「原话：…」
+    # （`tables.quote_prefix`，程序截取）。
     # 写手按**评论内容**归题、可直接从这一栏摘原声；没有这一栏的行照旧只有标题。
     # §RPT-4 货 3（C-3）：与题面对象/地域对不上的源多一栏「旁证·对照实体 / 旁证·海外平台」。
     pool = "\n".join(
@@ -906,8 +907,12 @@ _ATTRIBUTION_LINE = re.compile(r"^\s*(?:——|—|--)")
 _ELLIPSIS = re.compile(r"…+|\.{3,}|。{3,}")
 #: 太短的片段不值得比：一两个字撞上原文纯属巧合，判红只会白烧一轮重写。
 QUOTE_MIN_CHARS = 8
-#: 原声只能引这两级（共用规则 §5 与 §5.6 第 4 步）。C 级只作旁证、D 与未评级正文不引。
-QUOTE_GRADES = frozenset({"A", "B"})
+#: 原声能引的等级（共用规则 §5.6 第 4 步）。§RPT-5：放宽到 C 级——评论在五维结构下
+#: 天花板就是 C（权威 0 / 交叉 0 / 完整 0 分居多），只收 A/B 等于原声永远为空，写手只能
+#: 写「没有可引的原声」，而库里明明有原文（r-20271e8a5028 S01「不许碰我的电子闺蜜」）。
+#: C 级作原声的条件是**稿面标出等级**（`unlabeled_quotes`），读者看得见这句只是旁证。
+#: D 与未评级正文仍不引。
+QUOTE_GRADES = frozenset({"A", "B", "C"})
 
 
 def quote_blocks(markdown: str) -> list[tuple[int, list[str], list[int]]]:
@@ -1000,11 +1005,11 @@ def altered_quotes(markdown: str, corpus: str) -> list[str]:
 
 
 def lowgrade_quotes(markdown: str, grade_by_mark: Mapping[int, Any]) -> list[str]:
-    """等级闸：拿 C 级（或 D / 未评级）证据作原声的那些块。
+    """等级闸：拿 D 级或未评级证据作原声的那些块（§RPT-5 起 C 级放行，须标等级）。
 
-    共用规则 §5 写着「C 级只作旁证，不得单独支撑结论」、§5.6 第 4 步写着原声
-    「只从 A/B 级证据里挑」——同样是没人执行。缺陷 9 里正文自己写明 S39 是 C 级
-    不得作原声，另一段又拿 S39 当案例。
+    共用规则 §5.6 第 4 步写着原声只从 `QUOTE_GRADES` 里挑——之前没人执行，缺陷 9 里
+    正文自己写明 S39 是 C 级不得作原声，另一段又拿 S39 当案例。C 级放行后这道闸
+    只拦 D 与未评级；C 级有没有标等级由 `unlabeled_quotes` 管。
     """
     problems = []
     for line_no, texts, marks in quote_blocks(markdown):
@@ -1015,10 +1020,91 @@ def lowgrade_quotes(markdown: str, grade_by_mark: Mapping[int, Any]) -> list[str
         if bad:
             listed = "、".join(f"S{n:02d}（{g} 级）" for n, g in bad)
             problems.append(
-                f"第 {line_no} 行起的原声引的是 {listed}：原声只能从 A/B 级证据里挑，"
-                "C 级只作旁证、D 与未评级正文不引。换一条 A/B 级的原声，"
+                f"第 {line_no} 行起的原声引的是 {listed}：原声只能从 A/B/C 级证据里挑，"
+                "D 与未评级正文不引。换一条 A/B/C 级的原声，"
                 "或者把这一段改成不带原声的解读。")
     return problems
+
+
+#: 出处行上的等级标：「等级 C」或「C 级」。写手偶有全角问号写未评级，一并认成 ?。
+_GRADE_LABEL = re.compile(r"等级\s*([ABCD?？])|(?<![A-Za-z])([ABCD])\s*级")
+
+
+def quote_attributions(markdown: str) -> list[tuple[int, str, list[int]]]:
+    """成稿里每个**原声**块的出处行：`(起始行号, 出处行正文合并, 块内角标号)`。
+
+    认块的口径与 `quote_blocks` 一字不差（只认带角标或带出处行的 `>` 块），
+    差别只在它留的是出处行而不是引语行——`unlabeled_quotes` 要看的是出处行上有没有等级。
+    """
+    blocks: list[tuple[int, str, list[int]]] = []
+    start, attributions, marks, has_text = 0, [], [], False
+    for index, line in enumerate(markdown.splitlines(), start=1):
+        if line.lstrip().startswith(">"):
+            if not attributions and not marks and not has_text:
+                start = index
+            body = line.lstrip().lstrip(">").strip()
+            marks.extend(int(n) for n in _MARK.findall(body))
+            body = _MARK.sub("", body).strip()
+            if not body:
+                continue
+            if _ATTRIBUTION_LINE.match(body):
+                attributions.append(body)
+            else:
+                has_text = True
+            continue
+        if (has_text or marks) and (marks or attributions):
+            blocks.append((start, " ".join(attributions), marks))
+        start, attributions, marks, has_text = 0, [], [], False
+    if (has_text or marks) and (marks or attributions):
+        blocks.append((start, " ".join(attributions), marks))
+    return blocks
+
+
+def unlabeled_quotes(markdown: str, grade_by_mark: Mapping[int, Any]) -> list[str]:
+    """§RPT-5 货 1：每条原声的出处行必须标等级，且标的要与池里一致。
+
+    C 级放进原声之后，读者分得清「这是旁证」的唯一办法就是稿面那个「等级 C」——
+    没标、标错，当轮打回这一节/片，不等验收。没角标的块（把握度那句）不上闸。
+    """
+    problems = []
+    for line_no, attribution, marks in quote_attributions(markdown):
+        if not marks:
+            continue
+        labels = {(a or b).replace("？", "?") for a, b in _GRADE_LABEL.findall(attribution)}
+        if not labels:
+            problems.append(
+                f"第 {line_no} 行起的原声出处行没有标等级：写成"
+                f"「—— 平台 · 等级 X [S{marks[0]:02d}]」，X 照信息源池里那条的等级填"
+                "（C 级也要引就必须标出来，读者要看得见它只是旁证）。")
+            continue
+        for n in sorted(set(marks)):
+            grade = str(grade_by_mark.get(n) or "?")
+            if grade not in labels:
+                problems.append(
+                    f"第 {line_no} 行起的原声把 S{n:02d} 的等级标错了（写的是 "
+                    f"{'/'.join(sorted(labels))}，池里是 {grade} 级）：等级照池里填，不许自己定。")
+    return problems
+
+
+#: §RPT-5 货 2：与库事实相反的模板句。库里有这条评论的正文（写手池的「原话：」栏就是它），
+#: 稿面却说「未截取到」——读者顺着角标点进去一看原文在，整份稿的可信度归零。
+#: 09-16 r-20271e8a5028 咨询体稿关键发现第 2 条实测。原声引用块不查，那是发帖人的话。
+FALSE_FACT_PATTERNS = (r"未截取到评论正文", r"证据池未截取", r"未截取到正文", r"未截取到.{0,6}原话",
+                       r"未抓取到评论正文", r"没有截取到.{0,6}正文")
+
+
+def false_fact_lines(markdown: str) -> list[tuple[int, str]]:
+    """写手文本里与库事实相反的行：`(行号, 命中的字)`。"""
+    hits = []
+    for index, line in enumerate(markdown.splitlines(), start=1):
+        if line.lstrip().startswith(">"):
+            continue
+        for pattern in FALSE_FACT_PATTERNS:
+            found = re.search(pattern, line)
+            if found:
+                hits.append((index, found.group(0)))
+                break
+    return hits
 
 
 #: 建议降级区的小标题。共用规则 §6.5.4：全是孤证的想法机械降级放进这里。
@@ -1302,7 +1388,7 @@ async def _write_target(adapter: Any, skill: Template, data: Mapping[str, Any],
                       shard=finding.index if finding is not None else None,
                       attempt=attempts, gate=gate, errors=errors, streak=streak)
 
-    # 两道引语闸的底本，一节只算一次：改过字的引语与 C 级原声都在这里被挡回去。
+    # 引语闸的底本，一节只算一次：改过字的引语、D 级原声、没标等级的原声都在这里被挡回去。
     corpus = quote_corpus(data, report_text)
     grade_by_mark = {int(str(item["mark"])[1:]): item.get("grade")
                      for item in data.get("sources") or [] if item.get("mark")}
@@ -1363,7 +1449,9 @@ async def _write_target(adapter: Any, skill: Template, data: Mapping[str, Any],
             continue
         # 货 2 两道闸：规则早写在共用规则里，正式稿层一直没有程序执行它。
         # 挡在这里而不是挡在验收尺子里——挡在这里当轮就重写，挡在尺子里要等整轮跑完。
-        quote_problems = altered_quotes(text, corpus) + lowgrade_quotes(text, grade_by_mark)
+        quote_problems = (altered_quotes(text, corpus) + lowgrade_quotes(text, grade_by_mark)
+                          # §RPT-5 货 1：C 级放行的代价是稿面必标等级，没标/标错当轮打回。
+                          + unlabeled_quotes(text, grade_by_mark))
         if current in ADVICE_SECTIONS:
             quote_problems += singlesource_advice(text.splitlines(), crossref)
         # §RPT-4 C-11：机器话挡在写作期。09-15 重出稿软检读到「被程序按互动量取为代表」「⛔ 不能读成」，
@@ -1372,6 +1460,12 @@ async def _write_target(adapter: Any, skill: Template, data: Mapping[str, Any],
             f"第 {line_no} 行写了系统自己的话「{word}」：这类说明是写给你的，不是写给读者的，"
             "换成人话或删掉（取数、挑原声的过程不写；规矩符号 ⛔ 不写）。"
             for line_no, word in machine_talk_lines(text)]
+        # §RPT-5 货 2：与库事实相反的话当轮打回——池里有原话栏却说「未截取到」。
+        quote_problems += [
+            f"第 {line_no} 行写了与库事实相反的话「{word}」：库里有这条评论的正文（信息源池的"
+            "「原话：」栏就是它），不许说「未截取到」。真没有原文才写「本轮这一格没有可引的原声」；"
+            "有原文但等级是 C，就引它并在出处行标「等级 C」。"
+            for line_no, word in false_fact_lines(text)]
         if quote_problems:
             errors = tuple(f"{unit}{p}" for p in quote_problems)
             _reject("quote")
