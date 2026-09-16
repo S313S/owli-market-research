@@ -24,7 +24,9 @@ from typing import Sequence
 
 #: 摘要里的发现行：行首编号 + 正文。SKILL 硬性规定「3–5 条关键发现，每条一行，
 #: 格式固定 `1. 【A】结论句[S12][S18]`」。只认顶格的编号行——续行与引用块不算。
-_FINDING_LINE = re.compile(r"^(\d+)\.[ \t]+(\S.*)$", re.MULTILINE)
+#: §D-072 货 3 把它转正（原 `_FINDING_LINE`）：`run.attitude_line` 的插入点也要按
+#: 这个列表定位，两处各写一份正则的话，写手换个写法会一处跟得上一处跟不上。
+FINDING_LINE = re.compile(r"^(\d+)\.[ \t]+(\S.*)$", re.MULTILINE)
 _MARK = re.compile(r"\[S(\d{2,})\]")
 #: 少于这么多条就不切：一条发现单独成节本来就不长，切了徒增合并面。
 #: 也是解析失灵时的兜底——读不出编号列表就退回整节写一次（老行为）。
@@ -54,7 +56,7 @@ def parse_findings(summary_markdown: str) -> list[Finding]:
     编号不连续（写手漏号）也照收，按出现次序重排——片号必须连续，否则片路径打架。
     """
     findings = []
-    for order, match in enumerate(_FINDING_LINE.finditer(summary_markdown or ""), 1):
+    for order, match in enumerate(FINDING_LINE.finditer(summary_markdown or ""), 1):
         text = match.group(2).strip()
         marks = tuple(f"S{int(n):02d}" for n in sorted({int(m) for m in _MARK.findall(text)}))
         findings.append(Finding(index=order, text=text, marks=marks))

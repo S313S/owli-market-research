@@ -186,6 +186,56 @@ def test_货2_总体态度行插在把握度之前_四数之和等于表的n(tmp
     assert attitude_line({}, ["豆包"]) == ""
 
 
+# —— §D-072 货 3：态度行的落点锁在关键发现列表后，不锁在把握度句上 ——
+
+_D072_TABLES = {"scenario_attitude": {"n": 3, "rows": [
+    {"场景": "情感陪伴", "态度": "正", "条数": 2}, {"场景": "其他", "态度": "负", "条数": 1}]}}
+
+
+def _d072_lines(tmp_path: Path, body: str) -> list[str]:
+    from app.report.polish.run import assemble
+
+    part = tmp_path / "01-执行摘要.md"
+    part.write_text(body, encoding="utf-8")
+    text = assemble([("执行摘要", part)], tables=_D072_TABLES, subjects=["豆包"])
+    return [l for l in text.split("\n") if l.strip()]
+
+
+def test_D072_态度行紧跟关键发现列表_把握度句是普通段落也不跑位(tmp_path: Path) -> None:
+    """RATE-5 报的病象：把握度句不是引用块，老插入点（认 `>` 开头）匹配失败，
+    态度行被兜底扔到节末——落在把握度句**之后**，读者读完发现列表正想问
+    「整体正多还是负多」的时候看不到它。r-20271e8a5028 咨询体稿就是这个形态。"""
+    lines = _d072_lines(tmp_path, "摘要第一段。\n\n"
+                        "1. 【A】第一条发现[S01]。\n"
+                        "2. 【C】第二条发现[S02]。\n\n"
+                        "本报告结论的把握度为**低**，因为证据几乎都是 C 级。\n")
+    attitude = next(i for i, l in enumerate(lines) if l.startswith("已编码评论 3 条"))
+    assert lines[attitude - 1].startswith("2. 【C】第二条发现"), "态度行没紧跟发现列表"
+    assert "把握度" in lines[attitude + 1], "态度行该在把握度句之前"
+
+
+def test_D072_把握度句缺席时态度行仍紧跟关键发现列表(tmp_path: Path) -> None:
+    """把握度句在不在场，不该改变态度行的落点——它锚的是发现列表。
+    缺席形态老代码同样走兜底，一样落到节末（这里落在「后文」之后）。"""
+    lines = _d072_lines(tmp_path, "摘要第一段。\n\n"
+                        "1. 【A】第一条发现[S01]。\n"
+                        "2. 【C】第二条发现[S02]。\n\n"
+                        "后文另起一段，与把握无关。\n")
+    attitude = next(i for i, l in enumerate(lines) if l.startswith("已编码评论 3 条"))
+    assert lines[attitude - 1].startswith("2. 【C】第二条发现"), "态度行没紧跟发现列表"
+    assert lines[attitude + 1].startswith("后文另起一段"), "态度行该插在后文之前，不是节末"
+    assert not any("把握度" in l for l in lines)
+
+
+def test_D072_没有发现列表时退回把握度之前_不再要求是引用块(tmp_path: Path) -> None:
+    """两级兜底：读不出发现列表就退回「把握度之前」。这一级也不再认 `>`——
+    形态不该决定位置，否则就是老病象换个入口复发。"""
+    lines = _d072_lines(tmp_path, "摘要只有散文，没有编号列表。\n\n"
+                        "本报告结论的把握度为**低**。\n")
+    attitude = next(i for i, l in enumerate(lines) if l.startswith("已编码评论 3 条"))
+    assert "把握度" in lines[attitude + 1], "兜底也要落在把握度句之前"
+
+
 def test_货2_编码落库带实体_回填只写变了的行(tmp_path: Path) -> None:
     import json
 
