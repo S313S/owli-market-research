@@ -1262,6 +1262,17 @@ async def backfill_report(
         str(item["id"]) for item in rows
         if str(item["id"]) in percentiles and _wants_representativeness(item)
     }
+    def _needs_full_backfill(item: Mapping[str, Any]) -> bool:
+        """这一行是「没评全」，收尾要把五维整个补一遍。"""
+
+        return not _already_agent_rated(item) and (
+            str(item.get("id")) in clustered_ids
+            or any(item.get(field) is None for field in SCORE_FIELDS)
+            or _crossref_verdict(
+                item.get("extra") if isinstance(item.get("extra"), Mapping) else {}
+            ) is None
+        )
+
     targets = [
         item for item in rows
         # §RATE-4 货 2：只重算分的一轮，凡是库里有闭集标签的行都要重算——
@@ -1269,20 +1280,26 @@ async def backfill_report(
         if _stored_labels([item]) is not None
     ] if rescore_only else [
         item for item in rows
-        if force or (
-            not _already_agent_rated(item)
-            and (
-                str(item.get("id")) in clustered_ids
-                or any(item.get(field) is None for field in SCORE_FIELDS)
-                or _crossref_verdict(
-                    item.get("extra") if isinstance(item.get("extra"), Mapping) else {}
-                ) is None
-                # 评级章按闭集打过的 UGC 行五维是齐的，`_already_agent_rated`
-                # 会把它们挡在外面——那样代表性尺子在真跑里永远落不到库上。
-                or str(item["id"]) in restale
-            )
-        )
+        if force
+        # §D-073：评级章按闭集打过的 UGC 行五维是齐的，`_already_agent_rated`
+        # 会把它们挡在外面，所以 `restale` 必须并在它**外侧**——此前 and/or 放
+        # 错了层，注释写的意图与代码正相反，代表性尺子在真跑里一条也落不到库上
+        # （09-15 那轮 attempted=240 全是没被 agent 评过的 baseline 行，755 条
+        # restale 一条没进）。`restale` 自身已经把「有分位」和「理由还是旧写法」
+        # 两条闸带在身上，所以提到外侧不会把别的行卷进来。
+        or str(item["id"]) in restale
+        or _needs_full_backfill(item)
     ]
+    # §D-073 货 3：只为换第一维尺子而入选的行，其余四维连分带理由原样送回——
+    # 口径与 `--rescore-only` 同（用户 09-05 拍甲）。不这么分，评级章打的
+    # 「交叉0:单条个人吐槽」会被重算路按 `extra.crossref_verdict` 缺失判成
+    # 「缺断言血缘簇」，755 行的交叉维与 grade 一起变 NULL——比病还重。
+    ruler_swap_only = {
+        str(item["id"]) for item in targets
+        if not force
+        and str(item["id"]) in restale
+        and not _needs_full_backfill(item)
+    }
     rated = 0
     failed = 0
     root = Path(runs_root)
@@ -1303,10 +1320,17 @@ async def backfill_report(
                 pending.append(item)
             else:
                 reusable.append((item, stored[0], False))
-        if reusable:
+        # 换尺子那批冻住后四维，其余按原路整条重算（§D-073 货 3）。
+        swap = [pair for pair in reusable
+                if str(pair[0].get("id")) in ruler_swap_only]
+        whole = [pair for pair in reusable
+                 if str(pair[0].get("id")) not in ruler_swap_only]
+        for chunk, freeze in ((whole, rescore_only), (swap, True)):
+            if not chunk:
+                continue
             payloads = _scored_payloads(
-                reusable, engine_preference, percentiles=percentiles,
-                freeze_others=rescore_only,
+                chunk, engine_preference, percentiles=percentiles,
+                freeze_others=freeze,
             )
             store.upsert_evidence_batch(payloads)
             rated += len(payloads)
