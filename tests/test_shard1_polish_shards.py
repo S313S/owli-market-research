@@ -617,6 +617,31 @@ def test_各表口径不含任何内部词():
     assert "词表见" not in md and "固定词表" not in md
 
 
+# —— §D-072 货 2：内部**角色名**这一类此前尺子一条都没收 ——
+
+def test_内部角色词进词表_旧文案被抓新文案干净():
+    """09-15 那份咨询体正式稿 17 条判据全过，却把「包终端复核 30 条一致 28 条」
+    原样给了客户——尺子只收了切块词与表名/字段名/代码路径，没收内部角色名。
+    这条同时锁两头：旧措辞必须被抓（否则等于词表又被摘空），
+    `coding.py` 现在产出的那句必须干净（否则病象原地复发）。"""
+    from app.reliability.coding import coding_tables
+
+    assert _internal_word_hits("模型编码（v2），包终端复核 30 条一致 28 条；") == ["包终端"]
+    for word in ("调度会话", "提货单", "奏折", "哨兵"):
+        assert _internal_word_hits(f"口径：{word}登记。") == [word], f"{word} 没进词表"
+
+    rows = [{"id": f"ev-{i:03d}", "platform": "xhs",
+             "raw_metrics": {"liked_count": 0, "comments_count": 0, "collected_count": 0},
+             "extra": {"content_kind": "user_opinion", "coding": {
+                 "coding_version": "v2", "audience": "学生", "scenario": "学习",
+                 "attitude": "正", "topics": ["功能与能力"], "quote": "很好用"}}}
+            for i in range(3)]
+    note = coding_tables(rows)["method_note"]
+    assert _internal_word_hits(note) == [], f"口径句还带内部词：{note}"
+    # ⛔ 复核读数是 v2 词表的真实读数，改数字＝造假：去角色名不许顺手动数。
+    assert "30 条" in note and "28 条" in note
+
+
 def test_人话映射长键先换_不被短键切碎():
     from app.report.polish.run import plain_words
 
