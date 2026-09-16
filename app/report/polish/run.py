@@ -20,8 +20,8 @@ from app.adapters.capability import Capability, FileSystemScope
 from app.adapters.contracts import EngineTask
 from app.orchestrator.sectioning import (SectionWallClockExpired,  # 只 import，不改那个文件
                                          _run_before_section_deadline)
-from app.report.polish.sharding import (Finding, merge_shards, parse_findings, shard_paths,
-                                        should_shard)
+from app.report.polish.sharding import (FINDING_LINE, Finding, merge_shards, parse_findings,
+                                        shard_paths, should_shard)
 from app.report.polish.skills import Template, get_template, shared_rules
 from app.report.polish.tables import collect_inputs
 
@@ -418,7 +418,7 @@ _ATTITUDE_ORDER = ("正", "负", "中", "混合")
 
 
 def attitude_line(tables: Mapping[str, Any], subjects: Sequence[str] = ()) -> str:
-    """执行摘要把握度那句**之前**的一行：已编码评论的总体态度分布，程序从表取、不经模型。
+    """执行摘要关键发现列表**之后**的一行：已编码评论的总体态度分布，程序从表取、不经模型。
 
     09-14 评审实测：摘要第一句是「情感陪伴被夸、回答质量被骂」，全篇没有一句「整体上
     正多还是负多」——那是「大家怎么看」最直接的答案，数在论据章的表里，结论没人写。
@@ -441,26 +441,81 @@ def attitude_line(tables: Mapping[str, Any], subjects: Sequence[str] = ()) -> st
     return f"已编码评论 {int(table['n'])} 条：{parts}（{scope}）。"
 
 
-def _inject_before_confidence(body: str, line: str) -> str:
-    """把 `line` 插在把握度引用块之前；稿里没有那句就接在节末。"""
+def _confidence_index(lines: Sequence[str]) -> int | None:
+    """把握度那一句在第几行。
+
+    §D-072 货 3：原先只认**引用块**里的把握度（`> 本报告结论的把握度为…`），
+    可写手常把它写成普通段落——r-20271e8a5028 那份咨询体稿就是普通段落，
+    于是匹配失灵、态度行被兜底扔到了节末（= 落在把握度句之后）。
+    形态不该决定位置，认词不认 `>`；`>` 前缀照样命中（`lstrip("> ")` 之后再看）。
+    """
+    return next((i for i, text in enumerate(lines)
+                 if "把握度" in text and text.strip()), None)
+
+
+def _block_end(lines: Sequence[str], start: int,
+               stops: Callable[[str], bool] | None = None) -> int:
+    """从 `start` 这一行起，跨到它所在那一段的最后一行。
+
+    §D-072 货 4 抽出来给两个注入点共用：「一段」就是**连续的非空行**——引用块
+    （`> …` 多行）与普通段落是同一个形状，按空行断，不按 `>` 前缀断。原先两处各写
+    一份跨段规则（一处认 `>`、一处认非空行），换个写法就会一处跟得上一处跟不上。
+    `stops` 给调用方再加一条提前刹车（发现列表那处要在下一条发现、或把握度句前停）。
+    """
+    end = start
+    while end + 1 < len(lines) and lines[end + 1].strip():
+        if stops is not None and stops(lines[end + 1]):
+            break
+        end += 1
+    return end
+
+
+def _append_at_section_end(body: str, line: str) -> str:
+    """两个注入点共用的最后一级兜底：锚点一个都找不着就接在节末（老行为）。"""
+    return body.rstrip() + "\n\n" + line
+
+
+def _inject_after_findings(body: str, line: str) -> str:
+    """把 `line` 插在关键发现编号列表**之后**（= 把握度那句之前）。
+
+    §D-072 货 3：态度行回答的是「整体正多还是负多」，读者读完那 3–5 条发现正想问
+    这个，所以它的位置是**贴着发现列表**，不是贴着把握度句——把握度句在场与否、
+    是不是引用块，都不该把这一行推到别处去（RATE-5 报的就是这个：把握度句不是
+    引用块，插入点匹配失败，行落到了节末）。
+
+    列表定位复用 `sharding.FINDING_LINE`（切片数片就是按它读的），找不到列表才退回
+    「把握度之前」，再找不到才接节末——两级兜底都是老行为，不是新失败。
+    """
     lines = body.split("\n")
-    hit = next((i for i, text in enumerate(lines)
-                if text.lstrip().startswith(">") and "把握度" in text), None)
-    if hit is None:
-        return body.rstrip() + "\n\n" + line
-    return "\n".join([*lines[:hit], line, "", *lines[hit:]])
+    last = next((i for i in range(len(lines) - 1, -1, -1)
+                 if FINDING_LINE.match(lines[i])), None)
+    if last is None:
+        hit = _confidence_index(lines)
+        if hit is None:
+            return _append_at_section_end(body, line)
+        return "\n".join([*lines[:hit], line, "", *lines[hit:]])
+    # 一条发现写成一行是 SKILL 的硬规定，但写手偶尔会折行；紧跟着的非空行仍属于
+    # 这条发现（markdown 的惰性续行），一并跨过去，免得把态度行插进某条发现中间。
+    end = _block_end(lines, last,
+                     stops=lambda text: bool(FINDING_LINE.match(text)) or "把握度" in text)
+    return "\n".join([*lines[:end + 1], "", line, *lines[end + 1:]])
 
 
 def _inject_after_confidence(body: str, line: str) -> str:
-    """把 `line` 插在把握度引用块之后；稿里没有那句就接在节末。"""
+    """把 `line` 插在把握度那一段**之后**；稿里没有那句就接在节末。
+
+    §D-072 货 4：原先只认**引用块**里的把握度（`startswith(">")`），与货 3 修掉的
+    是**同一条失灵路**——把握度写成普通段落时匹配失灵，主张行同样被兜底扔到节末。
+    货 3 那轮它没显形，只因那份稿 `confidence_line()` 返回空（没有交叉验证读数）；
+    换一份有读数的稿就会复发，所以这里跟着走同一套锚定与兜底，**不另造一套**：
+    锚点同用 `_confidence_index()`（认词不认 `>`），跨段同用 `_block_end()`
+    （引用块与普通段落都是「连续非空行」，一个规则两种形态都吃得下）。
+    """
     lines = body.split("\n")
-    hit = next((i for i, text in enumerate(lines)
-                if text.lstrip().startswith(">") and "把握度" in text), None)
+    hit = _confidence_index(lines)
     if hit is None:
-        return body.rstrip() + "\n\n" + line
-    end = hit
-    while end + 1 < len(lines) and lines[end + 1].lstrip().startswith(">"):
-        end += 1
+        return _append_at_section_end(body, line)
+    end = _block_end(lines, hit)
     return "\n".join([*lines[:end + 1], "", line, *lines[end + 1:]])
 
 
@@ -636,7 +691,7 @@ def assemble(parts: Sequence[tuple[str, Path]],
     chunks = []
     for name, body in bodies:
         if tables and name in OPENING_SECTIONS and attitude_line(tables, subjects):
-            body = _inject_before_confidence(body, attitude_line(tables, subjects))
+            body = _inject_after_findings(body, attitude_line(tables, subjects))
         if tables and name in OPENING_SECTIONS and confidence_line(tables, counts):
             body = _inject_after_confidence(body, confidence_line(tables, counts))
         chunks.append(f"# {name}\n\n{body}")
