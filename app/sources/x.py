@@ -80,12 +80,31 @@ _RUNTIME_MONEY_ENV = {
 
 def load_runtime_config(
     environ: Mapping[str, str] | None = None,
+    *,
+    env_path: str | Path | None = None,
 ) -> tuple[XSourceConfig, SourceUsageStore]:
-    """从运行时配置构造 X 工具；金额和 Console 现值不进代码常量。"""
+    """从运行时配置构造 X 工具；金额和 Console 现值不进代码常量。
 
-    values = os.environ if environ is None else environ
+    §SRC-4：进程环境没带齐六个 `OWLI_X_*` 键时，退到 `~/.owli/.env`（与
+    `X_BEARER_TOKEN` 同一个文件）里的同名键补齐；进程环境里已有的键优先。
+    留服由 launchd / nohup 起，环境里从来没有这六个键，X 卡在每一轮整跑里都
+    静默 `runtime_config_missing`（r-20271e8a5028 goal-1/ch-11）——钱闸的
+    现值本来就该和令牌放在一起，而不是要求每个起服务的人手敲六个 export。
+    """
+
+    process_values = os.environ if environ is None else environ
     required = [*_RUNTIME_MONEY_ENV.values(), "OWLI_X_USAGE_DB_PATH"]
-    missing = [name for name in required if not str(values.get(name, "")).strip()]
+    values: dict[str, str] = {
+        name: str(process_values.get(name, ""))
+        for name in (*required, "OWLI_X_API_BASE_URL", "OWLI_X_BEARER_TOKEN_ENV")
+        if str(process_values.get(name, "")).strip()
+    }
+    missing = [name for name in required if name not in values]
+    if missing:
+        for name, value in _read_env_file(env_path).items():
+            if name.startswith("OWLI_X_") and name not in values and value.strip():
+                values[name] = value
+        missing = [name for name in required if name not in values]
     if missing:
         raise ValueError("X 运行时配置缺失：" + ",".join(missing))
     try:
@@ -137,18 +156,14 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def load_bearer_token(
-    env_path: str | Path | None = None,
-    *,
-    variable_name: str = "X_BEARER_TOKEN",
-) -> str:
-    """只从 ~/.owli/.env 形态的文件读取 token，不读取进程环境。"""
+def _env_file_path(env_path: str | Path | None) -> Path:
+    return Path(env_path) if env_path is not None else Path.home() / ".owli" / ".env"
 
-    path = Path(env_path) if env_path is not None else Path.home() / ".owli" / ".env"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as error:
-        raise RuntimeError(f"无法读取 X 凭证文件：{path}") from error
+
+def _parse_env_lines(lines: list[str]) -> dict[str, str]:
+    """`KEY=value` / `export KEY=value` 形态，去引号；空值不进表。"""
+
+    parsed: dict[str, str] = {}
     for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -156,10 +171,39 @@ def load_bearer_token(
         if line.startswith("export "):
             line = line.removeprefix("export ").lstrip()
         key, separator, value = line.partition("=")
-        if separator and key.strip() == variable_name:
-            token = value.strip().strip('"').strip("'")
-            if token:
-                return token
+        if not separator:
+            continue
+        cleaned = value.strip().strip('"').strip("'")
+        if cleaned:
+            parsed[key.strip()] = cleaned
+    return parsed
+
+
+def _read_env_file(env_path: str | Path | None) -> dict[str, str]:
+    """读不到文件按空表处理：钱闸缺失的判定仍由 load_runtime_config 给出。"""
+
+    try:
+        lines = _env_file_path(env_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    return _parse_env_lines(lines)
+
+
+def load_bearer_token(
+    env_path: str | Path | None = None,
+    *,
+    variable_name: str = "X_BEARER_TOKEN",
+) -> str:
+    """只从 ~/.owli/.env 形态的文件读取 token，不读取进程环境。"""
+
+    path = _env_file_path(env_path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise RuntimeError(f"无法读取 X 凭证文件：{path}") from error
+    token = _parse_env_lines(lines).get(variable_name)
+    if token:
+        return token
     raise RuntimeError(f"X 凭证文件缺少 {variable_name}")
 
 
