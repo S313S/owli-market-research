@@ -237,10 +237,11 @@ def coding_targets(
 def quotable_targets(
     rows: Iterable[Mapping[str, Any]], *, force: bool = False,
 ) -> list[dict[str, Any]]:
-    """§RPT-3 货 1：正式稿**引得了**的该编码行——进了引用池（有角标）且等级在 A/B。
+    """§RPT-3 货 1：正式稿**引得了**的该编码行——进了引用池（有角标）且等级引得了
+    （`run.QUOTE_GRADES`，§RPT-5 起 A/B/C）。
 
-    主链路只编这一批：原声表只收「有角标 + A/B 级」的行（`coding_tables` 的
-    `marks` 与 `_quotable_grade` 两道），池外或 C 级的行编了也上不了正式稿的引用块。
+    主链路只编这一批：原声表只收「有角标 + 引得了的等级」的行（`coding_tables` 的
+    `marks` 与 `_quotable_grade` 两道），池外或 D 级的行编了也上不了正式稿的引用块。
     r-50600e09f7dd 实测：全部 UGC 560 行切 128 批 ≈ $58 / 7.4 h，这一批 68 行 20 批 ≈ $9。
     要全量（聚合表想数更多条）照旧走脚本 `--code-only`。
 
@@ -1044,7 +1045,7 @@ def coding_tables(
     调用方从计划的实体卡取名，别在这儿另抽一份——名字空间对不齐是静默的。
 
     `grade_by_mark` 是 角标号 → 证据等级。§D-059 货 4：给了就**只收正文引得了的
-    等级**（`run.QUOTE_GRADES` = A/B）。⛔ 这条不是锦上添花，是解一个死锁：
+    等级**（`run.QUOTE_GRADES`，§RPT-5 起 A/B/C）。⛔ 这条不是锦上添花，是解一个死锁：
     共用规则 §5.6 步骤 4 与写作期闸 `run.lowgrade_quotes` 都只许引 A/B 级，
     而这张表以前不看等级——真机实测「回答质量·负」那一格唯一的候选 S39 是 C 级，
     写手要给这格写引语只有它可选，引了必被闸打回，**重试 7 次全废、整轮 35.6 分钟没出稿**。
@@ -1129,6 +1130,10 @@ def coding_tables(
                         f"[S{marks[str(item.get('id'))]:02d}]"
                         if str(item.get("id")) in marks else None
                     ),
+                    # §RPT-5 货 1：等级随原声一起出——C 级进表之后，写手与读者都要
+                    # 看得见这句只是旁证。没给等级表（备料、离线核数）就是 None。
+                    "grade": (grades.get(int(marks[str(item.get("id"))]))
+                              if str(item.get("id")) in marks else None),
                     "platform": item.get("platform"),
                     "engagement": engagement_value(item),
                     # §QUOTE-1 货 2：光摆一个「0」不够。写手看见一列数字里的 0，
@@ -1185,6 +1190,17 @@ def coding_tables(
     }
 
 
+def _grade_footnote(quotes: Sequence[Mapping[str, Any]]) -> str:
+    """表注：本轮原声含几条 C 级。§RPT-5 货 1：C 级进表之后方法节要写明，读者据此
+    把它当例子不当依据。一条 C 级都没有就不写——写了等于提醒读者一件没发生的事。"""
+
+    c_count = sum(1 for q in quotes if str(q.get("grade") or "") == "C")
+    if not c_count:
+        return ""
+    return (f"本轮原声含 C 级 {c_count} 条（「等级」栏标出）——C 级只作旁证，"
+            "正文引它时出处行必须写「等级 C」，读者据此把它当例子，不当依据。")
+
+
 def _quotes_footnote(dropped: Mapping[str, Any]) -> str:
     """表注：这张表筛掉了多少、以及**不该**从行数少里读出什么。
 
@@ -1202,8 +1218,8 @@ def _quotes_footnote(dropped: Mapping[str, Any]) -> str:
     # 上面是「这句没在说研究对象」，这里是「这句说的是研究对象，但撑它的那条证据
     # 只够作旁证」。合成一句会让读者以为原声少是因为没人谈，而实情是证据不够硬。
     grade_note = (
-        f"另有 {dropped['等级不够']} 条点名了研究对象的原声，因为撑它的那条证据只够"
-        f"作旁证（C 级）或还没评级而未收——正文引用原声只认可独立支撑结论的那两档，"
+        f"另有 {dropped['等级不够']} 条点名了研究对象的原声，因为撑它的那条证据只是"
+        f"线索级（D 级）或还没评级而未收——正文引用原声认 A/B/C 三档、C 级须标明等级，"
         f"这张表与正文用的是同一把尺子。"
     ) if dropped.get("等级不够") else ""
     return (
@@ -1354,12 +1370,14 @@ def polish_tables(
             coverage=coverage),
         "quotes": _shell(
             "quotes", "UGC 代表原声（每格按互动量取前 3）",
-            ("主题", "态度", "原声", "平台", "互动量", "代表性"),
+            ("主题", "态度", "原声", "等级", "平台", "互动量", "代表性"),
             # 呈现层**永远**只出引得动的：一条角标都没有的原声，写手弃用是浪费、
             # 裸引会被尺子③判红。`coding_tables` 在没给角标表时不过滤（备料、
             # 离线核数要看全量），但走到这里就是要喂给写手了，没有回退。
             [row for row in (
                 {"主题": q["topic"], "态度": q["attitude"], "原声": q["quote"],
+                 # §RPT-5 货 1：等级摆在原声旁边，C 级一眼看得出是旁证。
+                 "等级": q.get("grade") or "?",
                  "平台": q["platform"], "互动量": q["engagement"],
                  # §QUOTE-1 货 2：0 这个数字本身不会拦住写手。多一列说人话的标注，
                  # 它把这句写成「头号负评」之前至少看得见「没人附和过」。
@@ -1374,6 +1392,7 @@ def polish_tables(
                 "「代表性」栏标了「无人点赞或评论」的那几条是这一格里没有更好的了才收的，"
                 "⛔ 不得把它们写成多数人的看法、也不得单独拎去当某一方的头号声音。"
                 "原声是**例子不是分布**，读它不能替代读上面的条数表。"
+                + _grade_footnote(data["quotes"])
                 + _quotes_footnote(data["quotes_dropped"])
             ),
             coverage=coverage),

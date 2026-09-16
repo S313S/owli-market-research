@@ -29,11 +29,12 @@ TABLES = {
 
 # ── 货 2 ────────────────────────────────────────────────────────────────────
 
-def test_原话前缀只给AB级评论_程序截取不改字() -> None:
+def test_原话前缀只给ABC级评论_程序截取不改字() -> None:
     comment = {"kind": "comment", "grade": "A", "content_excerpt": S28}
     prefix = quote_prefix(comment)
     assert prefix == S28[:QUOTE_PREFIX_CHARS] and "猫箱" in prefix
-    assert quote_prefix({**comment, "grade": "C"}) is None, "C 级不许作原声"
+    assert quote_prefix({**comment, "grade": "C"}) == prefix, "§RPT-5：C 级也给原话栏"
+    assert quote_prefix({**comment, "grade": "D"}) is None, "D 级不许作原声"
     assert quote_prefix({**comment, "kind": "post"}) is None, "帖子行不带原话栏"
     assert quote_prefix({**comment, "content_excerpt": "a\n\n b"}) == "a b"
 

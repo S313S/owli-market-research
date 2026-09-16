@@ -230,7 +230,8 @@ def test_三张表都出得来时_omitted为空():
 
 
 def test_原声表只收正文引得了的等级():
-    """§D-059 货 4：C 级证据不得进原声表。
+    """§D-059 货 4 加闸时只收 A/B；§RPT-5 放宽到 C（评论天花板是 C，只收 A/B 等于原声恒空）。
+    D 级仍不进。
 
     ⛔ 这不是收紧口味，是解一个死锁：共用规则 §5.6 步骤 4 与写作期闸
     `run.lowgrade_quotes` 都只许引 A/B 级，而这张表以前不看等级。真机实测
@@ -239,12 +240,12 @@ def test_原声表只收正文引得了的等级():
     """
     from app.report.polish.run import QUOTE_GRADES
 
-    assert "C" not in QUOTE_GRADES and set(QUOTE_GRADES) == {"A", "B"}
+    assert "D" not in QUOTE_GRADES and set(QUOTE_GRADES) == {"A", "B", "C"}
 
-    c_level = _build([dict(_coded(1, topics=["功能与能力"]), citation_no=4, grade="C")])
-    assert "quotes" not in c_level["tables"], "C 级原声不许进表——摆出来写手就会引"
+    d_level = _build([dict(_coded(1, topics=["功能与能力"]), citation_no=4, grade="D")])
+    assert "quotes" not in d_level["tables"], "D 级原声不许进表——摆出来写手就会引"
 
-    for grade in ("A", "B"):
+    for grade in ("A", "B", "C"):
         ok = _build([dict(_coded(1, topics=["功能与能力"]), citation_no=4, grade=grade)])
         assert "quotes" in ok["tables"], f"{grade} 级是正文引得了的，不该被挡"
 
@@ -269,16 +270,16 @@ def test_等级筛掉的条数要在表注里交代():
         evidence=[
             dict(_coded(1, topics=["功能与能力"], quote="豆包挺好用的，省了不少事。"),
                  citation_no=4, grade="B"),
-            # 点名了研究对象，但证据只够作旁证 → 该被等级那一刀砍掉并计数
+            # 点名了研究对象，但证据只是线索级（§RPT-5 起 C 放行，D 仍拦）→ 该被等级那一刀砍掉并计数
             dict(_coded(2, topics=["回答质量"], attitude="负",
-                        quote="豆包答得很敷衍，没法用。"), citation_no=5, grade="C"),
+                        quote="豆包答得很敷衍，没法用。"), citation_no=5, grade="D"),
             # 谁都没点名 → 该被实体那一刀砍掉，两刀要分开说
             dict(_coded(3, topics=["回答质量"], attitude="负",
                         quote="隔壁那家真香，谁用谁知道。"), citation_no=6, grade="B"),
         ])
     basis = data["tables"]["quotes"]["basis"]
 
-    assert "只够作旁证（C 级）" in basis, "等级那一刀必须交代"
+    assert "线索级（D 级）" in basis, "等级那一刀必须交代"
     assert "同一把尺子" in basis, "要说清和正文用的是同一个口径"
     assert "没提到研究对象" in basis, "实体那一刀原样保留，两刀分开说"
 

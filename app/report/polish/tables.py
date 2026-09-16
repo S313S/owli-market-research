@@ -924,9 +924,10 @@ QUOTE_PREFIX_CHARS = 120
 
 
 def quote_prefix(row: Mapping[str, Any]) -> str | None:
-    """A/B 级评论行的原话前缀：`content_excerpt` 的前 120 个字，程序截取、不经模型。
+    """引得了的评论行（`run.QUOTE_GRADES`，§RPT-5 起含 C 级）的原话前缀：`content_excerpt`
+    的前 120 个字，程序截取、不经模型。
 
-    只收评论（`kind=comment`）且等级引得了（`run.QUOTE_GRADES`）的行——C/D 级不许作原声，
+    只收评论（`kind=comment`）且等级引得了的行——D 级与未评级不许作原声，
     帖子行的标题本来就是正文或招牌，给了反而诱导把标题当原话。空白压成单个空格
     只为让池子一行一条；逐字闸（`run.altered_quotes`）比对时本来就去空白，不影响判定。
     """
