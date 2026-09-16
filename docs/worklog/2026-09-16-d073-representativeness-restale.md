@@ -111,13 +111,16 @@ AFTER {代表性: 755, 权威: 48, B级: 80, B级_UGC: 76}
 
 ## pytest
 
+全包三货齐（`cdf5e86` 的树）：
+
 ```
-2186 passed, 3 skipped in 32.23s
+2187 passed, 3 skipped in 29.94s
 exit=0
 ```
 
-基线 2183 + 本包 3 条（货 2）→ 2186；货 3 那条是第 4 条，在同一次全量里。
-（落盘文件 `/tmp/d073_full_swap.txt`，`echo exit=$?` 单独一行，没走管道，
+基线 2183 + 本包 4 条（货 2 的三条 + 货 3 的一条）= 2187。
+中途读数：只有货 1+2 时是 `2186 passed, 3 skipped, exit=0`。
+（落盘文件 `/tmp/d073_full_final.txt`，`echo exit=$?` 单独一行，没走管道，
 没用 `-q -q`。）
 
 ## 硬线自查
