@@ -52,6 +52,17 @@ _CREDIT_LIMIT = 6250
 _WINDOW_SECONDS = 900.0
 _REQUEST_COST = 100
 _MAX_ATTEMPTS = 3
+#: §SRC-4：API 不支持关键词检索，search 只能按票数拉列表再在本地匹配名称/标语/话题。
+#: 冷门词（r-20271e8a5028 的「Doubao」）会一页页翻到年底：3 次调用就烧光 15 分钟
+#: 6250 点额度，对端随后在 TLS 握手阶段直接掐连接（SSL EOF）。封顶后只看窗内
+#: 票数前 _MAX_PAGES×page_size 条，翻不到就如实报空。
+_MAX_PAGES = 10
+#: 单次瞬时网络错误（握手 EOF / 连接重置 / DNS）先重试，别把一次抖动当成源死了。
+_TRANSIENT_ATTEMPTS = 3
+_TRANSIENT_BACKOFF_SECONDS = (0.5, 1.5)
+#: 429 的 x-rate-limit-reset 最长 900s；在 MCP 子进程里睡满会把整章 30 分钟墙钟
+#: 睡掉一半，封顶到两分钟，仍不恢复就按「连续 429」报错。
+_MAX_429_WAIT_SECONDS = 120.0
 
 _POSTS_QUERY = """
 query OwliProductHuntPosts($first: Int!, $after: String, $postedAfter: DateTime!) {
@@ -226,7 +237,7 @@ def _request_page(
             return response
 
         backed_off = True
-        delay = _header_seconds(response.headers, 2 ** attempt)
+        delay = min(_header_seconds(response.headers, 2 ** attempt), _MAX_429_WAIT_SECONDS)
         _publish_status(
             RouteState.BACKOFF,
             kind="http_429",
@@ -247,6 +258,7 @@ def search(
     *,
     limit: int = 20,
     page_size: int = 20,
+    max_pages: int = _MAX_PAGES,
     on_event: Callable[[NormalizedEvent], Any] | None = None,
     store: Any | None = None,
     report_id: str | None = None,
@@ -255,7 +267,11 @@ def search(
     log_root: Path = DEFAULT_LOG_ROOT,
     log_clock: Callable[[], datetime] | None = None,
 ) -> list[Evidence]:
-    """拉取时间窗内按票数排序的 Product Hunt 发布条目。"""
+    """拉取时间窗内按票数排序的 Product Hunt 发布条目。
+
+    关键词只在本地匹配（API 无检索参数），最多翻 `max_pages` 页；翻完仍不够
+    `limit` 条就带着已匹配的条目返回，不再往下翻。
+    """
 
     if not isinstance(query, str):
         raise TypeError("query 必须是字符串；空字符串表示不做本地关键词过滤")
@@ -266,6 +282,8 @@ def search(
         raise ValueError("limit 必须是正整数")
     if not isinstance(page_size, int) or isinstance(page_size, bool) or not 1 <= page_size <= 20:
         raise ValueError("page_size 必须是 1–20 的整数")
+    if not isinstance(max_pages, int) or isinstance(max_pages, bool) or max_pages < 1:
+        raise ValueError("max_pages 必须是正整数")
     if store is not None and (not report_id or not goal_id):
         raise ValueError("入库时 report_id 与 goal_id 必填")
 
@@ -275,8 +293,10 @@ def search(
     nodes: list[Mapping[str, Any]] = []
     cursor: str | None = None
     has_next_page = True
+    pages_scanned = 0
 
-    while has_next_page and len(nodes) < limit:
+    while has_next_page and len(nodes) < limit and pages_scanned < max_pages:
+        pages_scanned += 1
         response = _request_page(
             token,
             {
@@ -303,6 +323,23 @@ def search(
         cursor = str(cursor_value) if cursor_value is not None else None
         if has_next_page and not cursor:
             raise RuntimeError("Product Hunt 声明有下一页但缺少 endCursor")
+
+    if has_next_page and len(nodes) < limit and pages_scanned >= max_pages:
+        _publish_status(
+            RouteState.CONTINUE,
+            kind="page_cap_reached",
+            reason="Product Hunt 关键词只能本地匹配，已翻到页数上限，不再往下翻",
+            raw={
+                "query": query,
+                "window": window,
+                "pages_scanned": pages_scanned,
+                "page_size": page_size,
+                "matched": len(nodes),
+            },
+            on_event=on_event,
+            log_root=log_root,
+            log_clock=log_clock,
+        )
 
     if not nodes:
         _publish_status(
@@ -453,31 +490,38 @@ def _post_graphql(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    request = Request(
-        _GRAPHQL_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": "Owli/0.1 Product-Hunt-source",
-        },
-    )
-    try:
-        with urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-            headers = dict(response.headers.items())
-            status = int(response.status)
-    except HTTPError as error:
+    headers_out = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Owli/0.1 Product-Hunt-source",
+    }
+    for attempt in range(_TRANSIENT_ATTEMPTS):
+        request = Request(_GRAPHQL_URL, data=body, method="POST", headers=headers_out)
         try:
-            payload = json.loads(error.read().decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            payload = {"errors": [{"message": "HTTP error"}]}
-        headers = dict(error.headers.items()) if error.headers is not None else {}
-        status = error.code
-    except (URLError, OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Product Hunt GraphQL 网络请求失败") from exc
+            with urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                headers = dict(response.headers.items())
+                status = int(response.status)
+            break
+        except HTTPError as error:
+            try:
+                payload = json.loads(error.read().decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = {"errors": [{"message": "HTTP error"}]}
+            headers = dict(error.headers.items()) if error.headers is not None else {}
+            status = error.code
+            break
+        except (URLError, OSError, json.JSONDecodeError) as exc:
+            if attempt < _TRANSIENT_ATTEMPTS - 1:
+                time.sleep(_TRANSIENT_BACKOFF_SECONDS[min(attempt, len(_TRANSIENT_BACKOFF_SECONDS) - 1)])
+                continue
+            # 原始异常进消息：MCP 只把 str(error) 回灌给模型和账本，`from exc` 的
+            # 链在那里是看不见的（09-15 诊断只拿到「网络请求失败」六个字）。
+            raise RuntimeError(
+                f"Product Hunt GraphQL 网络请求失败（重试 {_TRANSIENT_ATTEMPTS} 次）："
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
     if not isinstance(payload, Mapping):
         raise RuntimeError("Product Hunt GraphQL 响应不是 JSON 对象")
     return GraphQLResponse(status=status, headers=headers, payload=payload)
@@ -490,5 +534,9 @@ SOURCE_SPEC = SourceSpec(
     display_name="Product Hunt",
     collector_name="Product Hunt 数据抓取",
     capability_description="产品 launch、maker 自述、投票与发布评论",
-    prompt_hint="postedAfter 圈定时间窗并按 VOTES 排序",
+    prompt_hint=(
+        "postedAfter 圈定时间窗并按 VOTES 排序；API 不支持关键词检索，"
+        f"工具只在窗内票数前 {_MAX_PAGES * 20} 条里按名称/标语/话题本地匹配，"
+        "冷门产品名常为空，空结果不代表源坏了"
+    ),
 )

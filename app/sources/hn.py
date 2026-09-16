@@ -22,6 +22,15 @@ __all__ = ["search"]
 _SEARCH_URL = "https://hn.algolia.com/api/v1/search"
 _POINTS_THRESHOLD = 50
 _HITS_PER_PAGE = 1000
+#: §SRC-4 三级放宽：原口径（story、points>50）无命中 → 放宽分数 → 纳入评论。
+#: 「Doubao」近 90 天有 7 条 story、全年 21 条 story + 49 条评论，points>50 把它们
+#: 全滤成 0（r-20271e8a5028 goal-1/ch-13 判 empty_result）。一次 search 内部完成，
+#: 调用方「只调一次」的约束不变；命中即停，不把高分口径的结果和放宽后的混在一起。
+_FALLBACK_TIERS: tuple[tuple[str, int | None], ...] = (
+    ("story", _POINTS_THRESHOLD),
+    ("story", None),
+    ("comment", None),
+)
 _WINDOW_PATTERN = re.compile(r"^([1-9]\d*)d$")
 _MIN_INTERVAL_SECONDS = 0.25
 _MAX_ATTEMPTS = 3
@@ -68,21 +77,24 @@ def search(query: str, window: str, *, limit: int = _HITS_PER_PAGE) -> list[Evid
 
     days = int(match.group(1))
     window_start = _now_epoch() - days * 86_400
-    params = {
-        "query": query,
-        "tags": "story",
-        "numericFilters": (
-            f"created_at_i>{window_start},points>{_POINTS_THRESHOLD}"
-        ),
-        "hitsPerPage": str(limit),
-    }
-    payload = _fetch_json(f"{_SEARCH_URL}?{urlencode(params)}")
-    hits = payload.get("hits")
-    if not isinstance(hits, list):
-        raise RuntimeError("HN Algolia 响应缺少 hits 数组")
-
     fetched_at = _utc_now_iso()
-    return [_to_evidence(hit, query, fetched_at) for hit in hits]
+    for tags, points_threshold in _FALLBACK_TIERS:
+        filters = f"created_at_i>{window_start}"
+        if points_threshold is not None:
+            filters += f",points>{points_threshold}"
+        params = {
+            "query": query,
+            "tags": tags,
+            "numericFilters": filters,
+            "hitsPerPage": str(limit),
+        }
+        payload = _fetch_json(f"{_SEARCH_URL}?{urlencode(params)}")
+        hits = payload.get("hits")
+        if not isinstance(hits, list):
+            raise RuntimeError("HN Algolia 响应缺少 hits 数组")
+        if hits:
+            return [_to_evidence(hit, query, fetched_at) for hit in hits]
+    return []
 
 
 def _now_epoch() -> int:
@@ -137,7 +149,12 @@ def _to_evidence(hit: Any, query: str, fetched_at: str) -> Evidence:
     if not isinstance(hit, dict) or not hit.get("objectID"):
         raise RuntimeError("HN Algolia 命中项缺少 objectID")
     item_id = str(hit["objectID"])
-    excerpt = html.unescape(hit.get("story_text") or "")
+    tags = [str(tag) for tag in (hit.get("_tags") or []) if isinstance(tag, str)]
+    is_comment = "comment" in tags or (
+        not hit.get("title") and bool(hit.get("comment_text"))
+    )
+    # 评论命中（第三级放宽）：正文在 comment_text，标题借所属 story 的标题。
+    excerpt = html.unescape(hit.get("story_text") or hit.get("comment_text") or "")
     if len(excerpt) > _CONTENT_EXCERPT_CHARACTER_LIMIT:
         excerpt = (
             excerpt[
@@ -147,10 +164,10 @@ def _to_evidence(hit: Any, query: str, fetched_at: str) -> Evidence:
         )
     return {
         "platform": "hacker_news",
-        "source_type": "post",
+        "source_type": "comment" if is_comment else "post",
         "platform_item_id": item_id,
         "permalink": f"https://news.ycombinator.com/item?id={item_id}",
-        "title": hit.get("title"),
+        "title": hit.get("title") or hit.get("story_title"),
         "content_excerpt": excerpt or None,
         "author_name": hit.get("author"),
         "source_keyword": query,
@@ -193,7 +210,8 @@ SOURCE_SPEC = SourceSpec(
     capability_description="社区长讨论与完整评论树，适合采集真实使用反馈和技术抱怨",
     prompt_hint=(
         "Algolia 近90天，created_at_i>执行时点UTC epoch-7776000，"
-        "points>50，hitsPerPage=1000"
+        "points>50，hitsPerPage=1000；points>50 无命中时工具自动放宽为不限分数、"
+        "再纳入评论，一次调用即完成三级检索"
     ),
 )
 

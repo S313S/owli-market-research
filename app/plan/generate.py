@@ -381,13 +381,14 @@ def _goal_prompt(
         )
         hn_rule = (
             "HN 查询固定使用 created_at_i>执行时点UTC epoch-7776000、points>50、"
-            f"hitsPerPage={profile.source_item_limits['hacker_news']}；"
+            f"hitsPerPage={profile.source_item_limits['hacker_news']}"
+            "（无命中时工具自动放宽为不限分数、再纳入评论，仍只调一次）；"
         )
     else:
         scale_rule = ""
         hn_rule = (
             "HN 查询固定使用 created_at_i>执行时点UTC epoch-7776000、points>50、"
-            "hitsPerPage=1000；"
+            "hitsPerPage=1000（无命中时工具自动放宽为不限分数、再纳入评论，仍只调一次）；"
         )
     return (
         f"目标：扩展《{query}》中的 {goal_id}；骨架字段固定为："
@@ -733,7 +734,7 @@ def _agent_prompt(
         method = (
             f"仅消费上游产物，不发起新抓取；输入口径为查询式={query}、"
             "HN Algolia 近90天、created_at_i>执行时点UTC epoch-7776000、"
-            "points>50、hitsPerPage=1000。"
+            "points>50、hitsPerPage=1000（无命中时自动放宽为不限分数、再纳入评论）。"
         )
         evidence_rule = "事实须反向引用上游 permalink 与 fetched_at。"
         if "sectioned_document_valid" in output["validators"]:

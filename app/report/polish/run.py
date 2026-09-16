@@ -251,13 +251,19 @@ def plain_words(text: str) -> str:
 
 #: 机器 reason → 人话。SKILL 第 7 条明写「用人话改写，不要照抄
 #: `goal-2/ch-3 empty_result` 这种」——既然是照着一张表改写，就没有理由让模型抄，
-#: 抄错了还要被尺子抓。表外的 reason 原样保留（宁可露出机器词，也不瞎猜它是什么意思）。
+#: 抄错了还要被尺子抓。表外的 reason 统一写「原因未记录」（不瞎猜也不泄露机器词）。
+#: §SRC-4：tool_unavailable 是章账本闭集里的正式成员（X 钱闸配置缺失、Product Hunt
+#: 网络失败都归它），此前不在表里，正式稿上整行只剩「原因未记录」，读者以为没记。
 _MISSING_REASON = {
     "timeout": "这一段采集超时没跑完",
     "empty_result": "这一段跑完了但没采到任何内容",
     "conclusion_invalid": "这一段写出来了但没通过结论校验，未采用",
     "retry_exhausted": "这一段重试用尽仍未成功",
     "blocked": "这一段被权限或风控挡住",
+    "tool_unavailable": "这一段用的信息渠道当时接不上（接口没配好或没连通），没采到内容",
+    "quota_exhausted": "这一段的接口额度用完了，没跑完",
+    "source_missing": "这一路信息渠道整轮都没取到内容",
+    "source_degraded": "这一路信息渠道中途出过故障，只取到部分内容",
 }
 
 
