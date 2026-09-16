@@ -440,3 +440,76 @@ def test_机器话在写作期就打回_原声引用块不查_尺子与闸同一
     assert [word for _, word in machine_talk_lines(text)] == ["程序按", "⛔"]
     ruler = _ruler()
     assert ruler.MACHINE_TALK is MACHINE_TALK_PATTERNS
+
+
+# —— §D-072 货 4：主张行与态度行是同一条失灵路，跟着改同源 ——
+
+#: 带交叉验证读数，`confidence_line()` 才非空（货 3 那轮那份稿它返回空，
+#: 所以这条病象在货 3 的用例里显不出形——这正是它被漏掉的原因）。
+_D072_CROSSREF = {**_D072_TABLES,
+                  "crossref_mix": {"n": 9, "rows": [
+                      {"交叉验证结论": "SINGLE", "主张数": 7},
+                      {"交叉验证结论": "PASS", "主张数": 2}]}}
+
+
+def _d072_lines_with_claims(tmp_path: Path, body: str) -> list[str]:
+    from app.report.polish.run import assemble
+
+    part = tmp_path / "01-执行摘要.md"
+    part.write_text(body, encoding="utf-8")
+    text = assemble([("执行摘要", part)], tables=_D072_CROSSREF, subjects=["豆包"])
+    return [l for l in text.split("\n") if l.strip()]
+
+
+def test_D072_货4_主张行紧跟把握度段_普通段落形态也不跑位(tmp_path: Path) -> None:
+    """货 3 修的是态度行，这条是**同一缺陷的第二成因**：`_inject_after_confidence`
+    原先同样只认引用块（`startswith(">")`），把握度写成普通段落时匹配失灵，
+    主张行被兜底扔到节末。本轮不显形只因那份稿没有交叉验证读数。"""
+    lines = _d072_lines_with_claims(tmp_path, "摘要第一段。\n\n"
+                                    "1. 【A】第一条发现[S01]。\n"
+                                    "2. 【C】第二条发现[S02]。\n\n"
+                                    "本报告结论的把握度为**低**，因为证据几乎都是 C 级。\n\n"
+                                    "后文另起一段。\n")
+    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    assert "把握度" in lines[claims - 1], "主张行没紧跟把握度段"
+    assert lines[claims + 1].startswith("后文另起一段"), "主张行该在后文之前，不是节末"
+    # 两行的先后不能乱：态度行贴发现列表，主张行贴把握度段。
+    attitude = next(i for i, l in enumerate(lines) if l.startswith("已编码评论 3 条"))
+    assert attitude < claims
+
+
+def test_D072_货4_把握度写成多行普通段落_主张行不插进段落中间(tmp_path: Path) -> None:
+    """跨段规则同用 `_block_end`：一段 = 连续非空行，引用块与普通段落同一个形状。
+    老代码只跨 `>` 前缀行，多行普通段落会被从中间劈开（或整个落到节末）。"""
+    lines = _d072_lines_with_claims(tmp_path, "摘要第一段。\n\n"
+                                    "1. 【A】第一条发现[S01]。\n\n"
+                                    "本报告结论的把握度为**低**，\n"
+                                    "因为进入引用的证据几乎全部是 C 级社媒评论。\n\n"
+                                    "后文另起一段。\n")
+    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    # ⚠️ 把握度段后面必须还留着别的段，这条断言才分得出真假：段落若是节里最后一段，
+    # 「插在段后」与老代码的「兜底接节末」会落在同一个位置，红不出来（本包实测踩过）。
+    assert lines[claims - 1].startswith("因为进入引用的证据"), "主张行插进把握度段中间了"
+    assert lines[claims + 1].startswith("后文另起一段"), "主张行掉到节末了"
+
+
+def test_D072_货4_把握度是引用块_老形态行为不变(tmp_path: Path) -> None:
+    """老形态（`> 本报告结论的把握度…` 多行引用块）的落点一格不许动——
+    换锚定是为了多认一种形态，不是换掉原来认得的那种。"""
+    lines = _d072_lines_with_claims(tmp_path, "摘要第一段。\n\n"
+                                    "1. 【A】第一条发现[S01]。\n\n"
+                                    "> 本报告结论的把握度为**低**。\n"
+                                    "> 证据几乎都是 C 级。\n\n"
+                                    "后文另起一段。\n")
+    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    assert lines[claims - 1].startswith("> 证据几乎都是 C 级"), "引用块形态的落点变了"
+    assert lines[claims + 1].startswith("后文另起一段")
+
+
+def test_D072_货4_把握度缺席时主张行接节末_兜底与态度行同源(tmp_path: Path) -> None:
+    """最后一级兜底两处共用 `_append_at_section_end`，是老行为不是新失败。"""
+    lines = _d072_lines_with_claims(tmp_path, "摘要第一段。\n\n"
+                                    "1. 【A】第一条发现[S01]。\n\n"
+                                    "后文另起一段，与把握无关。\n")
+    assert lines[-1].startswith("主张 9 条"), "缺席形态该接节末"
+    assert not any("把握度" in l for l in lines)

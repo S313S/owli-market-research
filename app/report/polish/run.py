@@ -453,6 +453,28 @@ def _confidence_index(lines: Sequence[str]) -> int | None:
                  if "把握度" in text and text.strip()), None)
 
 
+def _block_end(lines: Sequence[str], start: int,
+               stops: Callable[[str], bool] | None = None) -> int:
+    """从 `start` 这一行起，跨到它所在那一段的最后一行。
+
+    §D-072 货 4 抽出来给两个注入点共用：「一段」就是**连续的非空行**——引用块
+    （`> …` 多行）与普通段落是同一个形状，按空行断，不按 `>` 前缀断。原先两处各写
+    一份跨段规则（一处认 `>`、一处认非空行），换个写法就会一处跟得上一处跟不上。
+    `stops` 给调用方再加一条提前刹车（发现列表那处要在下一条发现、或把握度句前停）。
+    """
+    end = start
+    while end + 1 < len(lines) and lines[end + 1].strip():
+        if stops is not None and stops(lines[end + 1]):
+            break
+        end += 1
+    return end
+
+
+def _append_at_section_end(body: str, line: str) -> str:
+    """两个注入点共用的最后一级兜底：锚点一个都找不着就接在节末（老行为）。"""
+    return body.rstrip() + "\n\n" + line
+
+
 def _inject_after_findings(body: str, line: str) -> str:
     """把 `line` 插在关键发现编号列表**之后**（= 把握度那句之前）。
 
@@ -470,28 +492,30 @@ def _inject_after_findings(body: str, line: str) -> str:
     if last is None:
         hit = _confidence_index(lines)
         if hit is None:
-            return body.rstrip() + "\n\n" + line
+            return _append_at_section_end(body, line)
         return "\n".join([*lines[:hit], line, "", *lines[hit:]])
     # 一条发现写成一行是 SKILL 的硬规定，但写手偶尔会折行；紧跟着的非空行仍属于
     # 这条发现（markdown 的惰性续行），一并跨过去，免得把态度行插进某条发现中间。
-    end = last
-    while (end + 1 < len(lines) and lines[end + 1].strip()
-           and not FINDING_LINE.match(lines[end + 1])
-           and "把握度" not in lines[end + 1]):
-        end += 1
+    end = _block_end(lines, last,
+                     stops=lambda text: bool(FINDING_LINE.match(text)) or "把握度" in text)
     return "\n".join([*lines[:end + 1], "", line, *lines[end + 1:]])
 
 
 def _inject_after_confidence(body: str, line: str) -> str:
-    """把 `line` 插在把握度引用块之后；稿里没有那句就接在节末。"""
+    """把 `line` 插在把握度那一段**之后**；稿里没有那句就接在节末。
+
+    §D-072 货 4：原先只认**引用块**里的把握度（`startswith(">")`），与货 3 修掉的
+    是**同一条失灵路**——把握度写成普通段落时匹配失灵，主张行同样被兜底扔到节末。
+    货 3 那轮它没显形，只因那份稿 `confidence_line()` 返回空（没有交叉验证读数）；
+    换一份有读数的稿就会复发，所以这里跟着走同一套锚定与兜底，**不另造一套**：
+    锚点同用 `_confidence_index()`（认词不认 `>`），跨段同用 `_block_end()`
+    （引用块与普通段落都是「连续非空行」，一个规则两种形态都吃得下）。
+    """
     lines = body.split("\n")
-    hit = next((i for i, text in enumerate(lines)
-                if text.lstrip().startswith(">") and "把握度" in text), None)
+    hit = _confidence_index(lines)
     if hit is None:
-        return body.rstrip() + "\n\n" + line
-    end = hit
-    while end + 1 < len(lines) and lines[end + 1].lstrip().startswith(">"):
-        end += 1
+        return _append_at_section_end(body, line)
+    end = _block_end(lines, hit)
     return "\n".join([*lines[:end + 1], "", line, *lines[end + 1:]])
 
 
