@@ -1269,7 +1269,15 @@ async def backfill_report(
         if _stored_labels([item]) is not None
     ] if rescore_only else [
         item for item in rows
-        if force or (
+        if force
+        # §D-073：评级章按闭集打过的 UGC 行五维是齐的，`_already_agent_rated`
+        # 会把它们挡在外面，所以 `restale` 必须并在它**外侧**——此前 and/or 放
+        # 错了层，注释写的意图与代码正相反，代表性尺子在真跑里一条也落不到库上
+        # （09-15 那轮 attempted=240 全是没被 agent 评过的 baseline 行，755 条
+        # restale 一条没进）。`restale` 自身已经把「有分位」和「理由还是旧写法」
+        # 两条闸带在身上，所以提到外侧不会把别的行卷进来。
+        or str(item["id"]) in restale
+        or (
             not _already_agent_rated(item)
             and (
                 str(item.get("id")) in clustered_ids
@@ -1277,9 +1285,6 @@ async def backfill_report(
                 or _crossref_verdict(
                     item.get("extra") if isinstance(item.get("extra"), Mapping) else {}
                 ) is None
-                # 评级章按闭集打过的 UGC 行五维是齐的，`_already_agent_rated`
-                # 会把它们挡在外面——那样代表性尺子在真跑里永远落不到库上。
-                or str(item["id"]) in restale
             )
         )
     ]
