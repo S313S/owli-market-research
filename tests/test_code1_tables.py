@@ -62,7 +62,11 @@ def test_人群不出表只出附录一句():
     tables = coding_tables(rows)
     assert "audience_by_scenario" not in tables and "audience" not in tables
     assert tables["audience_note"] == "10 条编码里 9 条看不出发帖人身份（90%）"
-    assert "包终端复核" in tables["method_note"] and "条数" in tables["method_note"]
+    # §D-072 货 1：这句原样进客户稿的附录「各表口径」，不许出现内部角色名；
+    # 复核读数（30 / 28）是 v2 词表的真实读数，改数字＝造假，所以两头都锁。
+    note = tables["method_note"]
+    assert "条数" in note and "30 条" in note and "28 条" in note
+    assert not any(word in note for word in ("包终端", "调度会话", "提货单", "奏折", "哨兵"))
 
 
 def test_闸词只打自己写的比例句_不打引用原文():
