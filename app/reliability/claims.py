@@ -133,12 +133,23 @@ def prepare_claim_registration(
     raw_claims: Sequence[Any],
     *,
     source: str,
+    deduped: list[dict[str, Any]] | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[str]],
     list[dict[str, Any]],
 ]:
-    """校验断言并联接 evidence；只把悬空 permalink 降级为丢弃账。"""
+    """校验断言并联接 evidence；只把悬空 permalink 降级为丢弃账。
+
+    §D-075：**同一条主张内逐字节重复的 permalink** 一并降级——机械去重保留第一条，
+    去掉的逐条进 `deduped`，由调用方落进事件。真机 r-20271e8a5028 的读数：1380 条
+    主张里只有 1 条把同一条小红书评论写了两遍（`claims[732].evidence[2]`），按
+    「一处不合规整批退回」端掉了全部 1380 条，`reports.extra` 里连 `claims` 键都
+    没有、正式稿交叉验证表整张空。同一条主张重复引同一个来源是**书写冗余**不是
+    结构违规：下面本来就用 `seen_urls` 把重复那条跳过了，联接结果一字不差，
+    「整批退回」是它唯一的后果。⛔ 这一处只治逐字节重复，别的校验一个字不放宽；
+    ⛔ 也不静默——去了什么必须查得到，否则等于把证据质量问题藏起来。
+    """
 
     if source not in {"chapter", "backfill"}:
         raise ValueError("claims_source 只能是 chapter 或 backfill")
@@ -202,7 +213,13 @@ def prepare_claim_registration(
                 offenders.append(f"{link_location}.permalink 不是 HTTP(S) 绝对链接")
                 continue
             if normalized in seen_urls:
-                offenders.append(f"{link_location}.permalink 在断言内重复")
+                # §D-075：书写冗余，机械去重 + 记账，⛔ 不再整批退回、⛔ 不静默。
+                if deduped is not None:
+                    deduped.append({
+                        "claim_id": claim_id,
+                        "location": link_location,
+                        "permalink": str(permalink),
+                    })
                 continue
             seen_urls.add(normalized)
             stance = raw_link.get("stance", "supports")
@@ -276,11 +293,13 @@ def register_claims(
     raw_claims: Sequence[Any],
     *,
     source: str,
+    deduped: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """两条生产路径共用的固定落库入口。"""
 
     claims, mapping, dropped = prepare_claim_registration(
-        store.list_evidence(report_id), raw_claims, source=source
+        store.list_evidence(report_id), raw_claims,
+        source=source, deduped=deduped,
     )
     store.set_report_claims(report_id, claims, dropped=dropped)
     store.attach_claim_ids(report_id, mapping)
