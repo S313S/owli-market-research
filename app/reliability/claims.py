@@ -26,6 +26,13 @@ _FIRSTHAND_SOURCE_BY_CLAIMS_SOURCE = {
 CLAIM_DROP_REASONS = frozenset({
     "dangling_evidence", "all_evidence_dangling",
 })
+#: §D-081 货 2：悬空断言被复查清掉时沿用登记期同一个词，报告侧只认一套说法。
+DANGLING_CLAIM_REASON = "all_evidence_dangling"
+#: §D-081 货 1：证据链里**逐条可降级**的闭集——越界只剔这一条链，不退整批。
+#: ⛔ 闭集本身一个字不放宽（`neutral` 不是合法取值，是写手写错了）。
+CLAIM_LINK_CLOSED_SETS: dict[str, frozenset[str]] = {
+    "stance": frozenset({"supports", "contradicts"}),
+}
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,14 @@ class ClaimsRegistrationError(ValueError):
 
 def _error(message: str, offenders: Iterable[str]) -> ClaimsRegistrationError:
     return ClaimsRegistrationError(message, list(offenders))
+
+
+def _accountable(value: Any) -> Any:
+    """记账里的「原值」必须原样可读，且必须能进事件（JSON 可序列化）。"""
+
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    return repr(value)
 
 
 def claims_from_documents(
@@ -134,6 +149,7 @@ def prepare_claim_registration(
     *,
     source: str,
     deduped: list[dict[str, Any]] | None = None,
+    rejected: list[dict[str, Any]] | None = None,
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[str]],
@@ -149,6 +165,15 @@ def prepare_claim_registration(
     结构违规：下面本来就用 `seen_urls` 把重复那条跳过了，联接结果一字不差，
     「整批退回」是它唯一的后果。⛔ 这一处只治逐字节重复，别的校验一个字不放宽；
     ⛔ 也不静默——去了什么必须查得到，否则等于把证据质量问题藏起来。
+
+    §D-081 货 1：**闭集越界**（`CLAIM_LINK_CLOSED_SETS`，目前只有 `stance`）同样
+    逐条降级——剔掉那一条证据链 + 逐条进 `rejected`。真机 r-3b3482ca7f8b 的读数：
+    写手在 sec-4 两条主张里把 `stance` 写成 `neutral`，**2 个越界值把 1360 条断言
+    整批打回**，`reports.extra.claims` 原样留着 replay 复制来的旧值。D-075 那次只
+    覆盖了「重复链接」，`stance` 越闭集没被覆盖，所以是同形状、不同触发条件。
+    ⛔ 闭集本身一个字不放宽：越界的链不进 `evidence_ids`、不进 `mapping`、
+    ⛔ 也不按默认值 `supports` 兜底——写错的立场当没写过，不当成支持。
+    ⛔ 同样不静默：哪条 claim、哪个字段、原值是什么，三样都进 `rejected`。
     """
 
     if source not in {"chapter", "backfill"}:
@@ -223,8 +248,16 @@ def prepare_claim_registration(
                 continue
             seen_urls.add(normalized)
             stance = raw_link.get("stance", "supports")
-            if stance not in {"supports", "contradicts"}:
-                offenders.append(f"{link_location}.stance 只能是 supports/contradicts")
+            # §D-081 货 1：闭集越界逐条剔除 + 记账，⛔ 不再整批退回、⛔ 不静默。
+            stance_rejected = stance not in CLAIM_LINK_CLOSED_SETS["stance"]
+            if stance_rejected and rejected is not None:
+                rejected.append({
+                    "claim_id": claim_id,
+                    "location": link_location,
+                    "permalink": str(permalink),
+                    "field": "stance",
+                    "value": _accountable(stance),
+                })
             if "firsthand" in raw_link and not isinstance(raw_link["firsthand"], bool):
                 offenders.append(f"{link_location}.firsthand 必须是 bool")
             origin_url = raw_link.get("origin_url")
@@ -234,6 +267,10 @@ def prepare_claim_registration(
                     normalized_origin = normalize_permalink(str(origin_url))
                 except ValueError:
                     offenders.append(f"{link_location}.origin_url 不是 HTTP(S) 绝对链接")
+            if stance_rejected:
+                # 剔除排在别的校验**之后**：同一条链上的结构违规照旧算数，
+                # ⛔ 不许让「立场写错」把 firsthand/origin_url 的检出能力一起掩盖掉。
+                continue
             # 悬空只改变证据的登记去向，不能让同一 link 绕过结构契约。
             evidence_id = evidence_by_url.get(normalized)
             if evidence_id is None:
@@ -294,23 +331,109 @@ def register_claims(
     *,
     source: str,
     deduped: list[dict[str, Any]] | None = None,
+    rejected: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """两条生产路径共用的固定落库入口。"""
 
     claims, mapping, dropped = prepare_claim_registration(
         store.list_evidence(report_id), raw_claims,
-        source=source, deduped=deduped,
+        source=source, deduped=deduped, rejected=rejected,
     )
     store.set_report_claims(report_id, claims, dropped=dropped)
     store.attach_claim_ids(report_id, mapping)
     return claims
 
 
+def audit_dangling_claims(store: Any, report_id: str) -> dict[str, Any]:
+    """§D-081 货 2：复查库里的 claims 引不引得到**本研究**的证据，悬空的必须显形。
+
+    病象（真机 r-3b3482ca7f8b）：replay 原样复制了上一轮的 `extra.claims`，而
+    `import_research` 给每行 evidence **重新生成 id**（两轮 820 行 id 交集 0）；
+    本轮登记又被 2 个 `stance` 越界值整批打回，于是 `extra.claims` 留着那 1380 条
+    复制来的断言，**2001 个 `evidence_ids` 在本研究一个都不存在**。`_audit_firsthand`
+    算出 0 对一声不吭 return ⇒ 成品看着有 1380 条断言、其实一条都对不上证据，零报警。
+
+    **显形阈值取「命中率 < 100%」，不拍经验阈值。** 理由：正常生产路径上
+    `prepare_claim_registration` 只把**查得到的** evidence 写进 `evidence_ids`
+    （悬空的 permalink 早进了 `claims_dropped`），所以本轮登记出来的 claims 命中率
+    恒为 100%。任何 < 100% 都意味着「库里这份 claims 不是本轮登记出来的」——
+    replay 复制来的、或登记失败留下的旧值——本身就是异常，没有需要容忍的正常带。
+
+    **处置分两档：**
+    - **全悬空**（`evidence_ids` 非空、一条都对不上）⇒ 移出 `extra.claims`，并写进
+      `claims_dropped`（reason 沿用登记期的 `all_evidence_dangling`）。它在报告侧是
+      纯假值：交叉验证维会把它当「有据的断言」计数，留着就是误导，清掉才叫显形。
+    - **部分悬空** ⇒ **只报警不动它**。它还有真证据撑着，清掉会连真内容一起丢。
+
+    只返回读数、只改库，⛔ 不在这里发事件也不打日志——判据要落在库与事件上，
+    事件由调用方（`runtime._finalize_if_terminal`）按返回的读数发。
+    """
+
+    report = store.get_report(report_id)
+    if report is None:
+        return {}
+    extra = report.get("extra") or {}
+    claims = extra.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return {}
+    known = {str(row.get("id") or "") for row in store.list_evidence(report_id)}
+    kept: list[Any] = []
+    purged: list[str] = []
+    refs = 0
+    hit = 0
+    for claim in claims:
+        evidence_ids = (
+            [str(value) for value in (claim.get("evidence_ids") or [])]
+            if isinstance(claim, Mapping)
+            else []
+        )
+        found = [value for value in evidence_ids if value in known]
+        refs += len(evidence_ids)
+        hit += len(found)
+        claim_id = claim.get("id") if isinstance(claim, Mapping) else None
+        if evidence_ids and not found and isinstance(claim_id, str) and claim_id:
+            purged.append(claim_id)
+            continue
+        kept.append(claim)
+    if purged:
+        dropped = [
+            dict(item) for item in (extra.get("claims_dropped") or [])
+            if isinstance(item, Mapping)
+        ]
+        seen = {
+            (str(item.get("claim_id")), str(item.get("reason"))) for item in dropped
+        }
+        for claim_id in purged:
+            if (claim_id, DANGLING_CLAIM_REASON) in seen:
+                continue
+            seen.add((claim_id, DANGLING_CLAIM_REASON))
+            dropped.append({
+                "claim_id": claim_id,
+                "reason": DANGLING_CLAIM_REASON,
+                # 复制来的 claims 只带 evidence_ids，没有 permalink 可记；
+                # 悬空的具体 id 进事件，这里只留「这条被清掉了」的库侧留痕。
+                "permalinks": [],
+            })
+        store.set_report_claims(report_id, kept, dropped=dropped)
+    return {
+        "claims": len(claims),
+        "refs": refs,
+        "hit": hit,
+        "missing": refs - hit,
+        "hit_rate": (hit / refs) if refs else 1.0,
+        "purged": purged,
+        "kept": len(kept),
+    }
+
+
 __all__ = [
     "CLAIM_ID_PATTERN",
     "CLAIM_DROP_REASONS",
+    "CLAIM_LINK_CLOSED_SETS",
+    "DANGLING_CLAIM_REASON",
     "FIRSTHAND_SOURCES",
     "ClaimsRegistrationError",
+    "audit_dangling_claims",
     "claims_from_documents",
     "prepare_claim_registration",
     "register_claims",
