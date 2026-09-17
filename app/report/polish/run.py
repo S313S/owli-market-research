@@ -1163,6 +1163,16 @@ DOWNGRADE_HEADING = "值得进一步验证的方向"
 ADVICE_SECTIONS = frozenset({ADVICE_SECTION, "需要回应的点",
                              ADVICE_SECTION_UNKNOWN_AUDIENCE, IMPLICATIONS_SECTION})
 _ENTRY_HEAD = re.compile(r"^\s*\d+[.)、]\s")
+#: §D-083：降级区**不只有独立小标题一种形态**。§REISSUE-1 第 2 轮真机两次都把它写成
+#: 编号条目标题的起始前缀（原文 `3. **值得进一步验证的方向：办公与生产力场景的真实使用度**`），
+#: 闸只认 `#` 开头的行，看不见 break 点，把已经降级过的条目照旧判红 ⇒ 连红两次整轮中止
+#: （2 h 37 min、$7.77 白付）。写手照提示词改两次都改不到点上，因为规则没写死形态。
+#:
+#: ⛔ 判定范围只到「条目号 + 紧跟的强调/引号标记之后**紧接**该词」。
+#: 放宽成「整行任意位置出现该词即 break」，写手在一条普通建议里顺口提一句
+#: 「这条也算值得进一步验证的方向」，后面整段建议就全免检了——那是把闸修哑。
+_DOWNGRADE_ENTRY_HEAD = re.compile(
+    r"^\s*\d+[.)、]\s+[*_~`“\"'「『（(【\[]*\s*" + re.escape(DOWNGRADE_HEADING))
 
 
 def singlesource_advice(lines: Sequence[str], crossref: Mapping[int, Any]) -> list[str]:
@@ -1170,6 +1180,10 @@ def singlesource_advice(lines: Sequence[str], crossref: Mapping[int, Any]) -> li
 
     一条建议横跨两行（建议行 + 依据行），角标分散在两行里；按行判会把只引孤证的那半行
     单独判红（09-05 九格实测两格误报）。**按「条」聚合才对。**
+
+    降级区认两种形态（§D-083，与共用规则 §6.5.4 写死的两种写法一一对应）：
+    独立小标题（`## 值得进一步验证的方向`），或编号条目标题的**起始**前缀
+    （`3. **值得进一步验证的方向：……**`）。两种都从命中处起、往后不再管。
 
     这个函数是**生产与验收共用的那一个**：验收尺子 `check_polished._advice_entry_problems`
     直接 import 它。同一个概念两处两个定义，是本项目现形过的一种假绿。
@@ -1180,6 +1194,10 @@ def singlesource_advice(lines: Sequence[str], crossref: Mapping[int, Any]) -> li
             if DOWNGRADE_HEADING in line:
                 break                   # 降级区之后的都不受门禁管
             continue
+        if _DOWNGRADE_ENTRY_HEAD.match(line):
+            # 行内前缀形态：这一条**本身**就是降级区的第一条，它和它后面的都不受管。
+            # 已攒的 `current`（前缀之前的那些条）留给循环外收尾，照旧判。
+            break
         if _ENTRY_HEAD.match(line) and current:
             entries.append(current)
             current = []
