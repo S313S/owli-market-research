@@ -235,3 +235,11 @@ sqlite3 "file:var/post-d082-2-kind.db?mode=ro" "ATTACH 'file:<绝对路径>/var/
 | 绿·全量 | 改后 | `../Owli/.venv/bin/python -m pytest -q -p no:cacheprovider > var/goods3-pytest-full.txt; echo EXIT=$?`（00:32:49–00:33:24） | **EXIT=0；2246 passed / 3 skipped**（基线 2244/3 + 新增 2） |
 
 真数据复核（零引擎、副本）：用改后代码把源头 `r-20271e8a5028` 从 `var/copies/g3-wx1-replay-real.db`（wx1 快照的副本）导成新 id `r-fbbeb80cb3b3`（源 runs 用本包空目录）：复制 803 行；comment xhs 428 / douyin 57 / reddit 78、父链全非空；按 permalink 逐列比 30 列（除 id/report_id）**不等 0 行**。
+
+## 关账核对（00:35）
+
+- 源头 `wx1-serve.db` db/wal/shm mtime 仍为 09-16 15:00:37 / 15:57:45 / 14:36:37（全程只以 `mode=ro` backup 取过一次）。
+- 沙盒库 quick_check ok；r-3b3482ca7f8b comment 563 / post 257。
+- 端口 8969/8975/8976/8979/8980/8981 `GET /api/researches` 均 200；8981 pid 31873（启动 09-17 12:36:46）、8980 pid 34988（09-15 22:30:24）未重启。
+- 未 push、未合 main；`git diff --name-only fcf50f1..HEAD` 12 个文件：`app/replay/import_research.py`、本 worklog、`scripts/acceptance/d082/` 9 个、`tests/test_d082_replay_copies_all_evidence_columns.py`。
+- 快照全留：`var/sandbox-live.db`、`var/wx1-source.db`、`var/pre-d082.db`（写前）、`var/post-d082-{2-kind,3-recluster,4-crossref,4b-refinish}.db`、`var/copies/*`。
