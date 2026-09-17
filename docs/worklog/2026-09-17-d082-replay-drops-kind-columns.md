@@ -97,3 +97,119 @@ integrity 两份均 ok、user_version 10。
 **货 2 执行顺序建议**（全部零引擎、一次写完）：① backup API 写前快照（确认 8981 无在跑任务）→ ② #1 恢复两列并判据 1 → ③ 剥 147 行持久化簇键 + 回填（#5，拒引擎，预期拒 3 次）→ ④ 若批甲再做 #6，随后剥键重跑回填确认 diff 0 → ⑤ `tables_probe.py` 复核判据 4 与本表读数 → ⑥ 交 §REISSUE-1 出稿（含 #7 Excel）。⛔ ②之前不跑 rescore-only；③④不可调换（先定簇结论再定交叉分）。
 
 货 1 新增尺子与脚本：`scripts/acceptance/d082/{snapshot,copy_db,restore_kind,diff_rows,tables_probe,diff_tables,derive,diff_derived,crossref_converge}.py`；读数落 `var/`（tables/、derive/、diffs/，不入库）。`app/` 零改动。
+
+### 调度批复（09-18 夜间自主模式，调度代拍，已落 decision-log）
+
+第 1–5 项批；第 6 项**批甲**（三条件：交叉分与等级只调生产函数、写明 6 行缺标签行怎么处理与是否计入 147/147、收完剥键重跑回填 diff 0 并逐条列被引角标变化）；第 12 项不修挂账；第 7 项 Excel 归 §REISSUE-1 出稿；第 13 项不修。随后开工货 2 → 货 3。
+
+## 货 2：沙盒数据修复（写 `../Owli-src5/var/src5-backfill.db`，零引擎）
+
+### ① 写前确认与快照
+
+- 00:20 核：`pgrep` 无 rpt1_polish / audit_driver / backfill 进程；库只被 8981（pid 31873）持有；三份研究全 completed；chapter_progress running 0；events 1816 行、最后一条 23:38:02（出稿停下那刻）。
+- 写前快照 **`var/pre-d082.db`**：00:22:37 backup API（`snapshot.py`），integrity ok、18,432,000 B、源库 mtime 读前读后相同；与 23:48 基准 `var/sandbox-live.db` evidence 全列 + claims **diff 0**。
+- 每步之后都取一份：`var/post-d082-2-kind.db` / `post-d082-3-recluster.db` / `post-d082-4-crossref.db` / `post-d082-4b-refinish.db`（终态）。
+
+### ② 恢复两栏（判据 1）
+
+`../Owli/.venv/bin/python scripts/acceptance/d082/restore_kind.py ../Owli-src5/var/src5-backfill.db --source var/wx1-source.db --sandbox-ok --snapshot var/pre-d082.db --apply`（EXIT 0，改 563 行，读数 `var/goods2/2-restore-kind.json`）
+
+独立尺子（sqlite3 CLI 直读快照，不经脚本）：
+
+```
+sqlite3 "file:var/post-d082-2-kind.db?mode=ro" "ATTACH 'file:<绝对路径>/var/wx1-source.db?mode=ro' AS src;
+  SELECT platform, COUNT(*) FROM evidence WHERE report_id='r-3b3482ca7f8b' AND kind='comment' GROUP BY platform;
+  SELECT COUNT(*) FROM evidence WHERE report_id='r-3b3482ca7f8b' AND kind='comment' AND COALESCE(parent_permalink,'')='';
+  SELECT COUNT(*) FROM evidence t JOIN src.evidence s ON s.report_id='r-20271e8a5028' AND s.permalink=t.permalink
+    WHERE t.report_id='r-3b3482ca7f8b' AND (t.kind IS NOT s.kind OR t.parent_permalink IS NOT s.parent_permalink);"
+```
+
+| 读数 | 修前 `pre-d082.db` | 修后 |
+|---|---|---|
+| kind=comment（xhs / douyin / reddit） | 0（0/0/0） | **563（428 / 57 / 78）** |
+| 评论父链为空 | —（全空） | **0** |
+| 与源头同 permalink 两列不等 | 563 | **0** |
+| source_type=comment 与 kind=comment 不一致 | 563 | 0 |
+| id / citation_no / 五维分 / rating_notes / reports.extra（`diff_rows.py pre-d082 vs post-2`） | — | **diff 0**（只 kind、parent_permalink 各 563 行变） |
+| 补采 X 10 / HN 7 | post | post（源头无此行，不动） |
+| 另两份研究 f9bb / 96e0 | — | 终态 vs 修前 diff 0（本包不修） |
+
+### ③ 剥簇键 + 回填
+
+`derive.py finish ../Owli-src5/var/src5-backfill.db --strip-crossref --sandbox-ok --snapshot var/post-d082-2-kind.db`（EXIT 0）：剥 147 行；`RefuseAdapter` 拒引擎 **3 次**（全是一手性审计未结算 25 对，与 §REISSUE-1 同）；attempted 0 / rated 0 / failed 0 / complete_rows 820；角标同步跳过（runs_root 在本包 scratch）。
+读数：断言 18 条变（WEAK→SINGLE 16、CONFLICT→PASS 2），SINGLE/WEAK/PASS/CONFLICT 1238/50/49/21 → **1254/34/51/19**；与货 1 副本 v3 **diff 0**。
+
+### ④ 收交叉分（批甲）
+
+`crossref_converge.py crossref-only ../Owli-src5/var/src5-backfill.db --sandbox-ok --snapshot var/post-d082-3-recluster.db`（EXIT 0，`var/goods2/4-crossref.json`）
+
+- **条件①调用的生产函数**（本包 base fcf50f1 行号）：`app/reliability/backfill.py:765 _normalize_report`、`app/reliability/scoring.py:312 engagement_percentiles`、`backfill.py:783 _stored_labels`、`backfill.py:1094 _scored_payloads`（`freeze_others=False`，内走 `backfill.py:697 _scoring_view` → `backfill.py:680 _crossref_verdict` → `scoring.py:490 score_evidence_partial` → `scoring.py:408 score_evidence`）；从生产载荷**只取** `score_crossref` 与 rating_notes 交叉段（`scoring.py:99 RATING_NOTES_PATTERN` 第 5/6 组）及「存在反证」尾注有无，其余四维原样；回写前过 `scoring.py:378 rating_notes_problem`；`score_total`/`grade` 是库 GENERATED STORED 列，写后逐行用 `scoring.py:129 grade_for_total` 核（断言通过）。上游簇结论本身来自 ③ 的 `backfill.py:1203 backfill_report` → `backfill.py:177 _backfill_claim_clusters` → `app/reliability/crossref.py:239 build_claim_clusters`。
+  - 自核：这版生产函数实现与货 1 手写版在 v3 副本上结果 evidence 全列 + claims **diff 0**。
+- **条件②6 行缺标签行**（X 4：S20/S23/S28/S34；HN 2：S38/S50；`content_kind` 空 ⇒ `_stored_labels` 判 None）：**跳过不写**。用 `score_evidence_partial`（标签取库里 extra 原值、簇结论 SINGLE）核出交叉分 0 = 库里 0，已对。**147/147 含这 6 行**（计为「已对、未写」）：147 = 已对的有标签行 92 + 已对的缺标签行 6 + 本轮写 49。若它们对不上，脚本会报 `unlabeled_mismatch` 退出、不猜口径。
+- 读数：写 49 行 score_crossref（连带 score_total 49、grade 35、rating_notes 49）；对得上 98/147 → **147/147**；grade 分布 A/B/C/D 16/86/399/319 → **15/85/399/321**；被引行 A/B/C 16/45/18 → **15/42/22**；原声闸（A/B/C）被引行进出 0。与货 1 副本 x3 **diff 0**。
+- **条件③再剥键重跑回填**：`derive.py finish ... --strip-crossref --snapshot var/post-d082-4-crossref.db` → 拒 3 次、rated 0；`post-d082-4` vs `post-d082-4b` evidence 全列（含 extra）+ reports.extra **diff 0**，147/147 保持。
+
+被引角标逐条（条件③；`var/goods2/4-cited-grade-changes.md` 由 `4-crossref.json` 生成）：
+
+写入 49 行；其中被引 44 行；被引且等级变 31；被引交叉分变但等级不变 13
+
+| 角标 | 簇结论 | 交叉分 旧→新 | 等级 旧→新 |
+|---|---|---|---|
+| S01 | SINGLE | 2→0 | A→B |
+| S02 | SINGLE | 2→0 | A→B |
+| S03 | SINGLE | 2→0 | A→B |
+| S05 | SINGLE | 1→0 | A→B |
+| S06 | SINGLE | 1→0 | A→B |
+| S07 | SINGLE | 1→0 | A→B |
+| S37 | WEAK | 0→1 | C→B |
+| S52 | SINGLE | 1→0 | A→B |
+| S54 | PASS | 1→2 | B→A |
+| S55 | PASS | 0→2 | B→A |
+| S56 | PASS | 0→2 | B→A |
+| S58 | PASS | 0→2 | B→A |
+| S59 | PASS | 0→2 | B→A |
+| S61 | WEAK | 0→1 | C→B |
+| S63 | WEAK | 0→1 | C→B |
+| S64 | WEAK | 0→1 | C→B |
+| S65 | WEAK | 0→1 | C→B |
+| S66 | SINGLE | 2→0 | A→B |
+| S68 | SINGLE | 2→0 | A→B |
+| S70 | PASS | 0→2 | B→A |
+| S73 | SINGLE | 2→0 | B→C |
+| S75 | SINGLE | 2→0 | B→C |
+| S76 | PASS | 1→2 | B→A |
+| S80 | SINGLE | 1→0 | B→C |
+| S81 | SINGLE | 1→0 | B→C |
+| S82 | SINGLE | 2→0 | B→C |
+| S83 | SINGLE | 2→0 | B→C |
+| S89 | PASS | 0→2 | B→A |
+| S95 | SINGLE | 2→0 | B→C |
+| S98 | SINGLE | 1→0 | B→C |
+| S99 | SINGLE | 1→0 | B→C |
+
+被引、交叉分变、等级不变：S04（SINGLE 1→0，A）、S08（SINGLE 1→0，B）、S09（SINGLE 1→0，B）、S10（SINGLE 1→0，B）、S33（SINGLE 1→0，C）、S51（PASS 1→2，A）、S69（PASS 1→2，A）、S71（SINGLE 1→0，B）、S74（SINGLE 1→0，B）、S78（PASS 1→2，B）、S88（SINGLE 1→0，B）、S90（WEAK 0→1，B）、S96（SINGLE 1→0，B）
+未被引 5 行：等级变化 {'C→D': 2, 'C→B': 2, 'B→B': 1}
+
+### ⑤ 零引擎复核（判据 2 / 4）
+
+- 判据 4：`../Owli/.venv/bin/python scripts/acceptance/d082/tables_probe.py ../Owli-src5/var/src5-backfill.db var/goods2/5-tables-final.json`（只读）→ 与货 1 副本 t2 **逐字节相同**。
+
+| 读数 | 修前（21:55 出稿用的 tables.json） | 终态 |
+|---|---|---|
+| platform_mix 其中评论 xhs / reddit / douyin | 0 / 0 / 0 | **428 / 78 / 57**（= 旧稿） |
+| 独立帖子数 xhs / reddit / douyin | 587 / 98 / 76 | 159 / 20 / 19 |
+| 态度三表主体 n / 未点名 | 141 / 79 | 90 / 130 |
+| crossref_mix SINGLE/PASS/WEAK/CONFLICT | 1238/49/50/21 | 1254/51/34/19 |
+| grade_mix 全库 A/B/C/D；被引 A/B/C | 16/86/399/319；16/45/18 | 15/85/399/321；15/42/22 |
+
+- 判据 2：`wx1-serve.db` 只以 `mode=ro` backup 取过一次（23:48:57）；00:30 复核 db 15:00:37 / wal 15:57:45 / shm 14:36:37，与读前相同。
+- 全程 `pre-d082` vs 终态：id、citation_no、权威/时效/完整/无关四维 **diff 0**；变的只有 kind/父链 563、score_crossref 49（批准的重算）及其生成列与理由、147 行簇键里 6+1+3+3+16 处、claims 18 条结论；reports / evidence / chapter_progress / events 行数 3/2460/360/1816 不变（本包不落事件）。
+- 8981 未重启：`GET /api/researches` 200。
+
+### 货 2 挂账与自拍
+
+- 挂账①（第 12 项，调度批不修）：工作稿 goal-6 交叉对比报告写于 kind 错标期间，写手池里评论全是 post、无父链；23 个被引评论 21 个正文已点明是评论（粗尺子，未逐句核），S62/S63 只在合并句里；「与父帖相反写 stance=contradicts」没法生效。要修得付：重写 ≈72 min / $11.69（转录窗口 19 次结果），连带断言重登记与一手性审计重审 ≈4 h 40 m / ≈$37.9。
+- 挂账②：`backfill.py:1380` 收敛轮遇到任一行缺闭集标签就 `_stored_labels` 整批 None、一行不写（本研究 6 行补采 X/HN）；本包用只收交叉维绕过，代码未改。
+- 挂账③：沙盒另两份研究 r-f9bb30969cf2 / r-96e0257a86b4 仍是 820 行全 post（非交付，调度批不修）。
+- 挂账④：Excel 「类型」列归 §REISSUE-1 出稿时重出（调度批）。
+- 自拍：基准改用 23:48 快照（post-reaudit 是回填前）；写库一步一快照；`derive.py`/`crossref_converge.py` 加「只认沙盒这一个路径 + 必须有已存在快照」的闸；6 行缺标签行跳过不写并计入 147/147。

@@ -9,7 +9,8 @@
 - `finish`：完整 `backfill_report`（一手性审计已结算的跳过、未结算的被拒；
   簇回填；五维补评；收敛轮；角标同步因 runs_root 指向空目录而跳过）。
 
-⛔ 库与 runs_root 都必须在本包 var/ 下（不碰沙盒库、不碰沙盒 runs）。
+⛔ runs_root 一律在本包 var/scratch-runs/ 下（不碰沙盒 runs）；库默认必须在本包 var/ 下，
+货 2 写沙盒库要 `--sandbox-ok --snapshot <已存在的写前快照>`。
 
 用法：
     ../Owli/.venv/bin/python scripts/acceptance/d082/derive.py rescore <副本库>
@@ -94,7 +95,12 @@ def _strip_crossref(database: Path) -> int:
 async def _run(ns: argparse.Namespace) -> dict[str, Any]:
     database = ns.database.resolve()
     if not database.is_relative_to(VAR):
-        raise SystemExit(f"拒绝：库不在本包 var/ 下：{database}")
+        # 货 2：写沙盒库只认这一个路径，且必须给出已存在的写前快照。
+        sandbox = (ROOT.parent / "Owli-src5/var/src5-backfill.db").resolve()
+        if not (ns.sandbox_ok and database == sandbox):
+            raise SystemExit(f"拒绝：库不在本包 var/ 下：{database}")
+        if ns.snapshot is None or not ns.snapshot.resolve().is_file():
+            raise SystemExit("拒绝：写沙盒库必须给出已存在的写前快照 --snapshot")
     runs_root = (VAR / "scratch-runs" / database.stem).resolve()
     runs_root.mkdir(parents=True, exist_ok=True)
     stripped = _strip_crossref(database) if ns.strip_crossref else 0
@@ -113,6 +119,8 @@ def main() -> int:
     ap.add_argument("mode", choices=("rescore", "finish"))
     ap.add_argument("database", type=Path)
     ap.add_argument("--strip-crossref", action="store_true")
+    ap.add_argument("--sandbox-ok", action="store_true")
+    ap.add_argument("--snapshot", type=Path)
     ns = ap.parse_args()
     payload = asyncio.run(_run(ns))
     print(json.dumps(payload, ensure_ascii=False, indent=1))
