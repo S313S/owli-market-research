@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import sys
 import unicodedata
 from dataclasses import asdict, is_dataclass
@@ -34,10 +35,58 @@ _SOURCE_RUNTIME_ENV_NAMES = (
 )
 
 
-def exposed_tool_name(source_id: str) -> str:
-    """Claude SDK 的 MCP 白名单名；逻辑工具名仍是 source.<id>。"""
+#: Claude Code CLI 把 MCP 工具暴露给模型时，名字之外的字符会被换成下划线。
+#:
+#: **规则依据（§D-080，2026-09-17 实测，⛔ 不是按单一样例硬编）**：真 CLI
+#: （`claude_agent_sdk` 2.1.274 内置）+ 真 stdio MCP server，注册一批故意做花的
+#: 工具名，读 `system/init` 消息里的 `tools` 清单，逐条对照实测所得——
+#:
+#:   ``source.hacker_news`` → ``source_hacker_news``   点换下划线
+#:   ``a.b.c``             → ``a_b_c``                 逐个换，不合并
+#:   ``double..dot``       → ``double__dot``           ⛔ 连续下划线**不**折叠
+#:   ``.leading``          → ``_leading``              ⛔ 首尾下划线**不**去掉
+#:   ``trailing.``         → ``trailing_``
+#:   ``Upper.Case``        → ``Upper_Case``            大小写原样保留
+#:   ``dash-keep.dot``     → ``dash-keep_dot``         连字符原样保留
+#:   ``under__score``      → ``under__score``          安全字符一个不动
+#:   ``sp ace`` / ``plus+sign`` / ``slash/x`` / ``colon:x`` → 一律换下划线
+#:   ``中文.源``            → ``____``                  非 ASCII 也逐字符换
+#:
+#: 即：**逐字符替换 `[^A-Za-z0-9_-]` 为 `_`**，不折叠、不去首尾、不改大小写。
+#: 服务端名那一段同规则（实测 ``owli.probe-X`` → ``owli_probe-X``）。
+#: 唯一与 Python 不同口径的角落是 BMP 外字符（JS 按 UTF-16 码元数两个下划线，
+#: Python 按码点一个）——信息源 id 都是 ASCII 标识符，够不着这个角落。
+_SDK_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]")
 
-    return f"mcp__{MCP_SERVER_NAME}__source.{source_id}"
+
+def sdk_name_segment(name: str) -> str:
+    """把一段名字改写成 Claude SDK 实际暴露的拼法。"""
+
+    return _SDK_UNSAFE_NAME_CHARS.sub("_", name)
+
+
+def registered_tool_name(source_id: str) -> str:
+    """MCP 服务端**注册**用的逻辑工具名——白名单项由它推导，⛔ 不许两头各写各的。
+
+    §D-080 的病根正是这里分了叉：注册走 ``source.<id>``、白名单另起一行也写
+    ``source.<id>``，可 SDK 暴露出去的是 ``source_<id>``，于是 Claude 路上每一次
+    信息源调用都撞 `工具不在 capability 白名单`。现在两头都从本函数取名。
+    """
+
+    return f"source.{source_id}"
+
+
+def exposed_tool_name(source_id: str) -> str:
+    """Claude SDK 的 MCP 白名单名；逻辑工具名仍是 ``source.<id>``。
+
+    ⚠️ 必须与 SDK 实际暴露的拼法逐字一致，否则 `make_permission_callback` 会把
+    模型的每一次信息源调用判成越权（§D-080）。
+    """
+
+    return (
+        f"mcp__{sdk_name_segment(MCP_SERVER_NAME)}"
+        f"__{sdk_name_segment(registered_tool_name(source_id))}"
+    )
 
 
 def source_event_path(task: Any) -> Path:
@@ -1145,7 +1194,8 @@ def _tool_definition(tool_cls: Any, source_id: str) -> Any:
         }
         required.append("window")
     return tool_cls(
-        name=f"source.{source_id}",
+        # ⚠️ §D-080：注册名与白名单项必须同源，⛔ 不许在这里另写一遍字面量。
+        name=registered_tool_name(source_id),
         description=f"调用 Owli 注册信息源 {source_id}",
         inputSchema={
             "type": "object",
@@ -1294,7 +1344,9 @@ __all__ = [
     "codex_mcp_args",
     "exposed_tool_name",
     "prepare_source_events",
+    "registered_tool_name",
     "replay_source_events",
+    "sdk_name_segment",
     "source_event_path",
     "stdio_server_config",
 ]
