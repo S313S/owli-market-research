@@ -138,4 +138,122 @@ attempt 6: start=+1599s → 被章墙钟砍在 +1678s（79s 就没了）
 
 ⛔ 这一条**没有**动手改，等调度拍。
 
+### 调度裁决（2026-09-17）：本包不修，另立 §D-076
+
+调度批：货 2 与 `claims=0` 是两个毛病，它要的是工序重排不是小修，本包不动。
+下面五行是给 §D-076 提货单用的读数（调度嘱「署明是你查的」）：
+
+1. 章 `goal-1/ch-18`（`consistency-check`，`readonly-analyst`，产物 markdown），
+   `attempts=6`、`reason=timeout`、`status=missing`。
+2. 每轮起跑间隔 325 / 362 / 293 / 312 / 305 秒，**全都贴着 300 秒**——
+   `DEFAULT_CLAUDE_TIMEOUT_SECONDS`（`app/adapters/claude.py:431`）单次 run 硬墙钟。
+3. 六轮都是同一个形状：**花 170~230 秒把 62 KB 的 `data-cleaning.md` 探完，刚要落笔就到点**；
+   session 最后一条事件是「我已有足够上下文，开始撰写」，之后没有 `result` 事件 = 写到一半被砍。
+4. 第 6 轮起跑时章墙钟 `chapter_deadline_seconds=1800` 只剩 201 秒，79 秒就被收走。
+5. `Read` 超限报错 6 次共耗 **4.7 秒 / 1678 秒（0.28%）**，且模型每次当场改 `offset` 分段读自愈——
+   ⛔ 「整读大文件耗光墙钟」不成立，切片读省下的是这 4.7 秒。
+
 ---
+
+## 货 1 修法（调度 2026-09-17 批准加进本包，范围变更待用户追认）
+
+### 改了什么
+
+只改一件事：**同一条主张内逐字节重复的 permalink**，从「整批退回」降级为
+「机械去重保留第一条 + 逐条记账」。
+
+- `app/reliability/claims.py`：`prepare_claim_registration` / `register_claims` 加
+  `deduped` 出参；命中重复时不再 `offenders.append`，改为记账后 `continue`。
+  那一行本来就 `continue` 跳过重复链接，联接结果一字不差——**「整批退回」是它唯一的后果**。
+- `app/orchestrator/runtime.py`：收尾登记时把 `deduped` 落成 `claims_links_deduped`
+  事件（形制照抄 §FIX-2 的 `claims_keys_stripped`：`count` + `entries[:50]`）。
+  ⛔ 不静默去重——静默去重等于把证据质量问题藏起来。
+
+⛔ 别的校验一个字没放宽：结构违规（`stance`/`firsthand`/`origin_url`/`id`/`text`/
+重复 claim id）照旧整批退回，有用例锁着。
+⛔ 没碰禁区：`app/store/`、`migrations`、`app/sources/`、`app/adapters/`、
+`app/reliability/ratelimit`、`app/replay/`、`app/config.py` 一个字没动；
+`app/reliability/crossref` 也**只读不改**（离线量表时调用了它，没改它）。
+
+### 真机库上读数：修前 / 修后
+
+在**自己 worktree 里的快照副本** `var/snap/wx1-fixed.db` 上跑（⛔ 没写留服库），
+喂的是真机 `r-20271e8a5028` 的 11 份章产物原文：
+
+| 落点 | 修前 | 修后 |
+|---|---|---|
+| `reports.extra` 有没有 `claims` 键 | **没有** | 有 |
+| `reports.extra.claims` 条数 | — | **1380** |
+| `reports.extra.claims_dropped` 条数 | — | 0 |
+| `evidence.extra.claim_ids` 非空行数 | **0 / 803** | **89 / 803** |
+| 去重记账条数 | —（整批退回，什么都没写） | **1**（见下） |
+
+去重记账的那一条，与真机 `events.report_validation` 的 offender 逐字对得上：
+
+```json
+{"claim_id": "c-06050401",
+ "location": "claims[732].evidence[2]",
+ "permalink": "https://www.xiaohongshu.com/explore/6a499e1b00000000070217d7?xsec_token=…&owli_comment=6a4e62b3000000002203e624"}
+```
+
+### 用例红绿两侧读数
+
+新用例 `tests/test_d075_claims_chain.py` 共 5 条，先在 base `9bbe8fa` 上真红过一次
+（当时工作树只有货 1 的 worklog，生产代码一个字没改）。
+**每条红的第一处断言都落在病象本身**，不是落在「新出参还不存在」上——
+记账断言一律排在行为断言之后，就是为了不让 `TypeError: unexpected keyword argument`
+冒充病象红（第一版写反了，读红的原文时发现并改掉）。
+
+| 用例 | base（红） | 本包（绿） |
+|---|---|---|
+| `一条重复不再连坐整批_其余主张照常登记` | `ClaimsRegistrationError: 断言登记失败，共 1 处`（`app/reliability/claims.py:269`） | PASSED |
+| `去重必须留痕_去了几条哪条主张哪个链接都查得到` | 同上（第一处行为断言就红） | PASSED |
+| `真正不同的链接一条都不许被并掉` | PASSED（防「改过头」的哨兵，两侧都绿） | PASSED |
+| `无重复时落库逐字节不变_且结构违规照旧整批退回` | PASSED（回归锁，两侧都绿） | PASSED |
+| `runtime_章成稿后带重复链接的主张仍真写进库` | **`KeyError: 'claims'`** —— 与真机「`extra` 里连键都没有」逐字同形 | PASSED |
+
+读红原文时另见一处与本卡无关的既有毛病：`ClaimsRegistrationError` 是
+`@dataclass(frozen=True)`，异常经 `contextlib` 重抛时会叠一层
+`FrozenInstanceError: cannot assign to field '__traceback__'`，
+把真正的错因挤到 traceback 上一段。⛔ 本包没动它，只在此留档。
+
+### 全量 pytest
+
+```
+2208 passed, 3 skipped in 33.57s
+exit=0
+```
+
+落盘 `/tmp/d075_full.txt` 后 `echo exit=$?` 取的码，⛔ 没用管道、⛔ 没用 `-q -q`。
+基线 2203 + 本包新增 5 条 = 2208，对得上。
+
+---
+
+## 顺带量的：1380 条登记进库后，交叉验证表会自己出来吗
+
+**会。** 出表条件与读数如下（⛔ 没为了让表出来改任何出表条件）：
+
+1. **出表条件**：`app/report/polish/tables.py:_crossref_mix` 按
+   `reports.extra.claims[].verdict` 计数。`crossref_mix` 是**无条件**挂进 `tables` 的
+   （`omitted_tables` 那道闸只管 UGC 编码那几张表），所以它一直在 tables.json 里，
+   只是 claims 为空时 `rows=[]`、`n=0`——真机那份正是这样，写手看见一张空表就不写它。
+2. **verdict 谁给**：`register_claims` 写的主张**不带 verdict**；verdict 由收尾期的
+   评级回填 `app/reliability/backfill.py:_backfill_claim_clusters` 算完簇后回写。
+   `runtime.py` 里的顺序是**先登记、后回填**（登记在 3247 行，
+   `_backfill_ratings_on_finalize` 在其后），所以登记一通，verdict 就跟着有。
+3. **实测**：在快照副本上登记 1380 条后跑 `_backfill_claim_clusters`——
+
+```
+带 verdict 的主张数: 1380 / 1380
+verdict 分布: SINGLE 1312 / PASS 28 / WEAK 24 / CONFLICT 16
+crossref_mix: n = 1380，4 行（修前 n=0、0 行）
+coverage: {"主张总数": 1380, "带多源证据的主张": 423}
+counts.claims: 0 → 1380
+```
+
+⚠️ 两句要说给读的人听：
+
+- 表出来了，但它说的第一句话是「**95.07% 的结论是单源孤证**」。这是语料层面的事实，
+  不是缺陷——而且正是客户该看到的东西。正式稿会照这个读数写，调度心里要有数。
+- 1380 条主张只引到 **89 / 803** 条证据行，主张池挤在很窄的一撮证据上。
+  这是另一张卡的事，本包只留读数不动手。

@@ -3241,6 +3241,7 @@ class RuntimeCoordinator:
             and citation_error is None
         ):
             claims_stripped: list[dict[str, Any]] = []
+            claims_deduped: list[dict[str, Any]] = []
             try:
                 documents = self._claim_documents(plan)
                 if any("claims" in document for document in documents):
@@ -3249,6 +3250,7 @@ class RuntimeCoordinator:
                         research_id,
                         claims_from_documents(documents, stripped=claims_stripped),
                         source="chapter",
+                        deduped=claims_deduped,
                     )
                 # §FIX-2 货 1：闭集外的键是机械剥掉的，剥了什么必须留痕可查
                 # （用户 09-03 拍板「甲」：只剥闭集外、剥了记账、闭集不放宽）。
@@ -3259,6 +3261,17 @@ class RuntimeCoordinator:
                             "research_id": research_id,
                             "count": len(claims_stripped),
                             "entries": claims_stripped[:50],
+                        },
+                    })
+                # §D-075：同一条主张内逐字节重复的链接是机械去掉的，同样必须留痕。
+                # ⛔ 不静默——静默去重等于把证据质量问题藏起来（调度 09-17 拍）。
+                if claims_deduped:
+                    await self.events.publish(research_id, {
+                        "type": "claims_links_deduped",
+                        "data": {
+                            "research_id": research_id,
+                            "count": len(claims_deduped),
+                            "entries": claims_deduped[:50],
                         },
                     })
             except ClaimsRegistrationError as exc:
