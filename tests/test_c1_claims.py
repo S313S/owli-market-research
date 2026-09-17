@@ -223,6 +223,13 @@ def test_全悬空断言整条丢弃并按闭集原因记账(tmp_path: Path) -> 
 
 
 def test_结构违规仍整批拒绝且不写丢弃账(tmp_path: Path) -> None:
+    """§D-081 货 1 改口径：造红用的样本从 `stance="maybe"` 换成 `firsthand="yes"`。
+
+    `stance` 越闭集从这一版起是**逐条剔除 + 记账**（见
+    `tests/test_d081_claims_resilience.py`），不再整批退回；这条用例锁的是
+    「**结构违规**照旧整批退回」，所以换一个真正的结构违规当样本，锁的东西不变。
+    """
+
     store = make_store(tmp_path)
     add_evidence(
         store, "r-c1", "ev-a", platform="web_search",
@@ -234,7 +241,7 @@ def test_结构违规仍整批拒绝且不写丢弃账(tmp_path: Path) -> None:
         register_claims(
             store,
             "r-c1",
-            [raw_claim("c-01", [ref("https://example.com/a", stance="maybe")])],
+            [raw_claim("c-01", [ref("https://example.com/a", firsthand="yes")])],
             source="chapter",
         )
     except ClaimsRegistrationError as caught:
@@ -244,7 +251,7 @@ def test_结构违规仍整批拒绝且不写丢弃账(tmp_path: Path) -> None:
         raise AssertionError("结构违规必须整批拒绝")
 
     assert caught_error is not None
-    assert "stance 只能是" in caught_error.offenders[0]
+    assert "firsthand 必须是 bool" in caught_error.offenders[0]
     extra = store.get_report("r-c1")["extra"]
     assert "claims" not in extra
     assert "claims_dropped" not in extra
@@ -252,6 +259,12 @@ def test_结构违规仍整批拒绝且不写丢弃账(tmp_path: Path) -> None:
 
 
 def test_悬空条目同时结构违规仍整批拒绝(tmp_path: Path) -> None:
+    """§D-081 货 1 加锁：闭集越界改成逐条剔除后，⛔ 不许把同一条链上的结构违规一起掩盖。
+
+    样本一字未动（同一条链上 stance/firsthand/origin_url 三处全坏）：`stance`
+    这一处从这一版起不再进 offenders（改走剔除 + 记账），另外两处必须照旧进。
+    """
+
     store = make_store(tmp_path)
 
     with pytest.raises(ClaimsRegistrationError) as caught:
@@ -268,7 +281,7 @@ def test_悬空条目同时结构违规仍整批拒绝(tmp_path: Path) -> None:
         )
 
     message = "\n".join(caught.value.offenders)
-    assert "stance 只能是" in message
+    assert "stance 只能是" not in message
     assert "firsthand 必须是 bool" in message
     assert "origin_url 不是 HTTP(S)" in message
     extra = store.get_report("r-c1")["extra"]

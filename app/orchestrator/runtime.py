@@ -83,6 +83,7 @@ from app.reliability.audit import degrade_after_closed_set_retry
 from app.reliability.backfill import backfill_report
 from app.reliability.claims import (
     ClaimsRegistrationError,
+    audit_dangling_claims,
     claims_from_documents,
     register_claims,
 )
@@ -3242,6 +3243,7 @@ class RuntimeCoordinator:
         ):
             claims_stripped: list[dict[str, Any]] = []
             claims_deduped: list[dict[str, Any]] = []
+            claims_rejected: list[dict[str, Any]] = []
             try:
                 documents = self._claim_documents(plan)
                 if any("claims" in document for document in documents):
@@ -3251,6 +3253,7 @@ class RuntimeCoordinator:
                         claims_from_documents(documents, stripped=claims_stripped),
                         source="chapter",
                         deduped=claims_deduped,
+                        rejected=claims_rejected,
                     )
                 # §FIX-2 货 1：闭集外的键是机械剥掉的，剥了什么必须留痕可查
                 # （用户 09-03 拍板「甲」：只剥闭集外、剥了记账、闭集不放宽）。
@@ -3274,11 +3277,56 @@ class RuntimeCoordinator:
                             "entries": claims_deduped[:50],
                         },
                     })
+                # §D-081 货 1：闭集越界的证据链是逐条剔掉的，同样必须留痕可查——
+                # 哪条 claim、哪个字段、原值是什么（真机 2 个 neutral 端掉 1360 条）。
+                if claims_rejected:
+                    await self.events.publish(research_id, {
+                        "type": "claims_links_rejected",
+                        "data": {
+                            "research_id": research_id,
+                            "count": len(claims_rejected),
+                            "entries": claims_rejected[:50],
+                        },
+                    })
             except ClaimsRegistrationError as exc:
                 claims_error = str(exc)
                 claims_offenders = exc.offenders
             except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
                 claims_error = f"断言登记失败：{type(exc).__name__}: {exc}"
+        # §D-081 货 2：登记之后**无条件**复查一遍「库里的 claims 引不引得到本研究的
+        # 证据」——这一步故意放在上面那个 `verdict is PASS` 分支**外面**：真机
+        # r-3b3482ca7f8b 正是校验判红、登记整个没跑，`extra.claims` 原样留着 replay
+        # 复制来的 1380 条（2001 个 evidence_ids 命中 0）。放在分支里就永远轮不到它。
+        # 也必须排在评级回填之前：回填的一手性审计会拿这份 claims 去逐对判，
+        # 悬空的断言算出 0 对就一声不吭 return，白跑一趟还把假值坐实。
+        dangling_error: str | None = None
+        try:
+            dangling = audit_dangling_claims(self.store, research_id)
+        except (KeyError, TypeError, ValueError) as exc:
+            dangling = {}
+            dangling_error = f"悬空断言复查失败：{type(exc).__name__}: {exc}"
+        if dangling.get("missing"):
+            await self.events.publish(research_id, {
+                "type": "claims_dangling_evidence",
+                "data": {
+                    "research_id": research_id,
+                    "claims": dangling["claims"],
+                    "evidence_refs": dangling["refs"],
+                    "hit": dangling["hit"],
+                    "missing": dangling["missing"],
+                    "hit_rate": round(dangling["hit_rate"], 4),
+                    "purged": dangling["purged"][:50],
+                    "purged_count": len(dangling["purged"]),
+                    "kept": dangling["kept"],
+                },
+            })
+            dangling_error = dangling_error or (
+                f"断言引用的证据在本研究对不上：{dangling['claims']} 条断言引了 "
+                f"{dangling['refs']} 次证据、只命中 {dangling['hit']} 次"
+                f"（命中率 {dangling['hit_rate']:.2%}）；其中 "
+                f"{len(dangling['purged'])} 条全悬空，已移出 extra.claims 并记进 "
+                "claims_dropped（reason=all_evidence_dangling）"
+            )
         # §X-1 货 1：断言登记之后、finish_report 之前无条件跑评级回填。
         await self._backfill_ratings_on_finalize(research_id)
         # §RPT-3 货 1：回填补齐等级之后，给正式稿引得了的评论编码（原声链路进主链路）。
@@ -3300,6 +3348,13 @@ class RuntimeCoordinator:
                 "message": claims_error,
                 "offenders": claims_offenders,
             })
+        # §D-081 货 2：悬空断言也要在**报告侧**读得到，不能只有一条事件。
+        if dangling_error is not None:
+            failures.append({
+                "validator": "claims_dangling_evidence",
+                "message": dangling_error,
+                "offenders": list(dangling.get("purged") or [])[:50],
+            })
         await self.events.publish(
             research_id,
             {
@@ -3307,7 +3362,9 @@ class RuntimeCoordinator:
                 "data": {
                     "verdict": (
                         validation.Verdict.FAIL.value
-                        if citation_error is not None or claims_error is not None
+                        if citation_error is not None
+                        or claims_error is not None
+                        or dangling_error is not None
                         else validation_report.verdict.value
                     ),
                     "validators": report_validators,
@@ -3319,6 +3376,7 @@ class RuntimeCoordinator:
             validation_report.verdict is not validation.Verdict.PASS
             or citation_error is not None
             or claims_error is not None
+            or dangling_error is not None
         )
         # 硬约束 4：报告能生成就 completed，failed 只留给「报告根本没生成」。
         # 校验没过是报告质量告警（已随 report_validation 事件发出），不是研究失败。
