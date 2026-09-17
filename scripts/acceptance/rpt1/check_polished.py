@@ -88,8 +88,10 @@ PIPELINE_WORDS = ("被引", "采集条数", "采集量", "采集总数")
 #: §RULE-1 货 2/货 3（评审 #10/#11）：限定词与「假设与不确定性」小节。
 #: 实测竞品稿两万字里这四个词出现 40 次、该小节出现 5 处，内容大同小异——
 #: 读者读到第三遍开始跳过，免责说满了等于一句也没说。
-HEDGE_WORDS = ("单源", "不能外推", "待核实", "不足以")
-HEDGE_PER_SECTION = 2
+#: §RPT-6：词表与上限**下放给生产侧**（`sharding`），这里 import 回来，值一个没改。
+#: 合并器要按同一把尺子收跨片重复的限定；两处各写一份的话，尺子量的与合并器收的
+#: 就不是同一件事了（本项目现形过的一种假绿）。
+from app.report.polish.sharding import HEDGE_PER_SECTION, HEDGE_WORDS  # noqa: E402
 UNCERTAINTY_HEADING = "假设与不确定性"
 APPENDIX_SECTION = "附录"
 #: 句子切分：中文句号/问号/叹号/分号与换行都算一句到头。

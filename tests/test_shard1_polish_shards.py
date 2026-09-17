@@ -131,14 +131,23 @@ def test_三条的摘要出三片_五条出五片_都不产生空片(count):
     assert all(f.text.strip() and f.marks for f in findings)
 
 
-def test_真稿按二级标题切四片再合回来逐字节相同(tmp_path):
-    """判据是**逐字节**，不是「看着差不多」——合并要是多吞一个空行，正文就变形了。"""
+def test_真稿按二级标题切四片再合回来除了被收的限定段逐字节相同(tmp_path):
+    """判据是**逐字节**，不是「看着差不多」——合并要是多吞一个空行，正文就变形了。
+
+    ⚠️ §RPT-6 换了这条的语义：合并不再是纯拼接，跨片重复的限定收尾段会在这里被收
+    （`sharding.fold_repeated_hedges`，理由见那个模块的文档头）。这份 09-06 的真稿
+    自己就带着那个病——四片的限定词是 1/0/0/2 共 3 处，超节上限 2。
+    所以判据从「合并 == 原文」改成「合并 == 原文减去被收的那几段，别的逐字节不变」：
+    「不许多吞一个空行」这个真正要守的东西一点没松。
+    """
     from app.report.polish.run import offpool_marks
-    from app.report.polish.sharding import merge_shards, shard_paths
+    from app.report.polish.sharding import (HEDGE_PER_SECTION, hedge_count, merge_shards,
+                                            shard_paths)
 
     original = FINDINGS_SECTION.strip()
     chunks = [c for c in re.split(r"(?m)^(?=## )", original) if c.strip()]
     assert len(chunks) == 4, "夹具应当是 4 个二级标题"
+    assert hedge_count(original) > HEDGE_PER_SECTION, "夹具变了：这份稿原本是超上限的"
 
     section = tmp_path / "02-关键发现.md"
     paths = shard_paths(section, len(chunks))
@@ -146,7 +155,17 @@ def test_真稿按二级标题切四片再合回来逐字节相同(tmp_path):
         path.write_text(chunk.strip() + "\n", encoding="utf-8")
     merged = merge_shards(paths)
 
-    assert merged == original
+    assert hedge_count(merged) <= HEDGE_PER_SECTION
+    # 被收的只能是整段的限定收尾段：把它们从原文里按整段抠掉，剩下的必须逐字节对得上。
+    collected = [p for p in re.split(r"\n\s*\n", original) if p not in
+                 re.split(r"\n\s*\n", merged)]
+    assert collected, "夹具超了上限却一段都没收"
+    rest = original
+    for paragraph in collected:
+        assert hedge_count(paragraph) > 0, f"收了一段不带限定词的：{paragraph[:40]}"
+        rest = rest.replace("\n\n" + paragraph, "")
+    assert merged == rest.strip(), "除了被收的那几段，正文变形了"
+
     pool = frozenset(range(1, 100))
     assert offpool_marks(merged, pool) == offpool_marks(original, pool)
     marks = lambda t: sorted(set(re.findall(r"\[S\d{2,}\]", t)))
@@ -512,7 +531,11 @@ def test_缺失清单由程序出表_机器reason翻成人话():
         {"goal_id": "goal-2", "chapter_id": "ch-3", "reason": "empty_result"},
     ])
     assert md.count("|") >= 8
-    assert "采集超时没跑完" in md and "没采到任何内容" in md
+    # §RPT-6 货 3 换了 `empty_result` 的措辞：原先「跑完了但没采到任何内容」读起来像
+    # 我们的采集出了问题，而它在本项目里专指「工具正常返回空列表」＝真的搜到 0 条
+    # （`sources-v1.md` 第 35–40 行、§D-066）。这条用例锁的是「机器词翻成人话」，
+    # 不是锁那一句人话本身，所以跟着换。
+    assert "采集超时没跑完" in md and "确实没有相关内容" in md
     # SKILL 第 7 条明写「不要照抄 goal-2/ch-3 empty_result 这种」——**禁的是整个串**。
     # 2026-09-09 那一轮我把它读成「只禁 reason」，于是 goal-1/ch-1 原样印进正文、
     # 尺子①红了 4 处。现在两半都禁。
