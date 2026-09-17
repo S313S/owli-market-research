@@ -157,16 +157,19 @@ def test_无重复时落库逐字节不变_且结构违规照旧整批退回(tmp
     assert raw_extra() == first
 
     # 结构违规照旧整批退回：同一批里既有重复又有违规时，违规那处不许被去重掩盖。
+    # §D-081 货 1 改口径：造红样本从 `stance="maybe"` 换成 `firsthand="yes"`——
+    # `stance` 越闭集从那一版起改走「逐条剔除 + 记账」（见 test_d081_claims_resilience.py），
+    # 这条锁的是「**结构违规**不被去重掩盖」，换个真结构违规当样本，锁的东西一字不变。
     with pytest.raises(ClaimsRegistrationError) as caught:
         prepare_claim_registration(
             store.list_evidence("r-c1"),
             [raw_claim("c-02", [
-                ref(XHS_COMMENT, stance="maybe"),
+                ref(XHS_COMMENT, firsthand="yes"),
                 ref(XHS_COMMENT),
             ])],
             source="chapter",
         )
-    assert any("stance 只能是" in item for item in caught.value.offenders)
+    assert any("firsthand 必须是 bool" in item for item in caught.value.offenders)
     extra = store.get_report("r-c1")["extra"]
     assert [claim["id"] for claim in extra["claims"]] == ["c-01"]
 
