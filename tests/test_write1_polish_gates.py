@@ -452,3 +452,41 @@ def test_d083_句中顺口提一句不算降级区():
     problems = singlesource_advice(loose.splitlines(), REAL_CROSSREF)
     assert len(problems) == 1, problems
     assert "把办公与生产力场景的真实使用度摸清楚" in problems[0]
+
+
+def test_d083_共用规则把两种形态都写死了():
+    """货 2：⛔ 规则与闸不许各说各话——闸认哪两种，规则就得写哪两种。
+
+    §REISSUE-1 两轮白付，真因不是写手不听话，是规则里根本没写降级区长什么样：
+    写手按「写成『值得进一步验证的方向』」的字面照做，写成了条目标题的句中前缀。
+    """
+    from app.report.polish.run import DOWNGRADE_HEADING
+
+    rules = shared_rules()
+    assert "### 6.5.4" in rules and "降级区写成什么样" in rules
+    # 形态①：独立小标题；形态②：条目号之后紧挨着的起始前缀——两个范例都要原样在规则里。
+    assert f"### {DOWNGRADE_HEADING}" in rules
+    assert f"3. **{DOWNGRADE_HEADING}：" in rules
+    # 防放宽那一半也得写给写手看，否则他还是会写在句中。
+    assert "写在句子中间不算降级" in rules
+    # ⛔ 不许再说「放进附录」——闸只在本节内认 break，搬去附录等于没降级。
+    assert "放进附录" not in rules
+
+
+@pytest.mark.parametrize("template", [t.name for t in load_templates()])
+def test_d083_三份模板都把降级形态指回共用规则(template):
+    """三个模板各自的建议节都受同一道闸管，别只有咨询体写了形态。
+
+    量的是 `Template.body`——真正投给写手的那份，不是磁盘上随便一个 md。
+    """
+    body = next(t for t in load_templates() if t.name == template).body
+    assert "6.5.4" in body and "降级区写成什么样" in body, template
+
+
+def test_d083_闸管的四个节名在规则里都能查到降级怎么写():
+    """`ADVICE_SECTIONS` 里每个节名，都要能在三份模板 + 共用规则里找到交代。"""
+    from app.report.polish.run import ADVICE_SECTIONS
+
+    corpus = shared_rules() + "\n".join(t.body for t in load_templates())
+    for name in ADVICE_SECTIONS:
+        assert name in corpus, name
