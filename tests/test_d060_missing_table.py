@@ -95,10 +95,19 @@ def test_yield_is_counted_by_agent_not_by_the_mislabelled_goal():
     assert chapters[("goal-1", "ch-1")]["cited"] == 12
 
 
-def test_a_real_gap_still_says_not_collected_with_the_channel_name():
-    """不能把真缺改没了：公众号×文心一言 0 条，仍写「没采到」，段落名变成渠道（实体）。"""
+def test_a_real_gap_still_names_the_channel_and_is_not_erased():
+    """不能把真缺改没了：公众号×文心一言 0 条，仍旧单独成行，段落名是渠道（实体）。
+
+    §RPT-6 货 3 换了这一行的**措辞**、没换它的存在：`empty_result` 指的是
+    「渠道正常跑通、检索范围内确实没有内容」（`sources-v1.md` 第 35–40 行；
+    §D-066 的 `SourceUnavailableError` 已经把「源不可用」那一支分了出去），
+    写成「没采到」会让客户以为是我们的采集坏了。这条用例锁的是
+    「真缺照样列出来、并且写清是哪个渠道」。
+    """
     md = missing_table(MISSING, OBJECTIVES, chapters=chapter_rows(PLAN, _rows()))
-    assert _lines(md)[1] == "| 微信公众号（文心一言） | 这一段跑完了但没采到任何内容 |"
+    row = _lines(md)[1]
+    assert row.startswith("| 微信公众号（文心一言） |")
+    assert "确实没有相关内容" in row and "没采到" not in row
 
 
 def test_timeout_with_zero_rows_keeps_the_old_reason():
