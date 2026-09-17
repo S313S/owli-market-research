@@ -202,7 +202,7 @@ sqlite3 "file:var/post-d082-2-kind.db?mode=ro" "ATTACH 'file:<绝对路径>/var/
 | crossref_mix SINGLE/PASS/WEAK/CONFLICT | 1238/49/50/21 | 1254/51/34/19 |
 | grade_mix 全库 A/B/C/D；被引 A/B/C | 16/86/399/319；16/45/18 | 15/85/399/321；15/42/22 |
 
-- 判据 2：`wx1-serve.db` 只以 `mode=ro` backup 取过一次（23:48:57）；00:30 复核 db 15:00:37 / wal 15:57:45 / shm 14:36:37，与读前相同。
+- 判据 2：`wx1-serve.db` 只以 `mode=ro` backup 取过一次（23:48:57）；00:27 复核 db 15:00:37 / wal 15:57:45 / shm 14:36:37，与读前相同。
 - 全程 `pre-d082` vs 终态：id、citation_no、权威/时效/完整/无关四维 **diff 0**；变的只有 kind/父链 563、score_crossref 49（批准的重算）及其生成列与理由、147 行簇键里 6+1+3+3+16 处、claims 18 条结论；reports / evidence / chapter_progress / events 行数 3/2460/360/1816 不变（本包不落事件）。
 - 8981 未重启：`GET /api/researches` 200。
 
@@ -213,3 +213,25 @@ sqlite3 "file:var/post-d082-2-kind.db?mode=ro" "ATTACH 'file:<绝对路径>/var/
 - 挂账③：沙盒另两份研究 r-f9bb30969cf2 / r-96e0257a86b4 仍是 820 行全 post（非交付，调度批不修）。
 - 挂账④：Excel 「类型」列归 §REISSUE-1 出稿时重出（调度批）。
 - 自拍：基准改用 23:48 快照（post-reaudit 是回填前）；写库一步一快照；`derive.py`/`crossref_converge.py` 加「只认沙盒这一个路径 + 必须有已存在快照」的闸；6 行缺标签行跳过不写并计入 147/147。
+
+## 货 3：代码修复（用户解禁 `app/replay/import_research.py` 一处）
+
+### 改法
+
+- 删手写的 `_EVIDENCE_COLUMNS`，新增 `_evidence_columns(store, evidence)`：复制列 = **目标库** `PRAGMA table_info(evidence)` ∩ 源行带的列 − `_EVIDENCE_IDENTITY_COLUMNS {id, report_id}`。源库 schema 旧、缺列时不抄、落默认值；`table_info` 本就不列生成列（score_total/grade）；表里有而 dao 不认的列会让 `add_evidence_batch` 当场抛 TypeError（要响不要静默丢）。`_JSON_EVIDENCE_COLUMNS` 不变。
+- 只动这一个文件；`app/store/` 等其它禁区未碰。
+
+### 守卫用例 `tests/test_d082_replay_copies_all_evidence_columns.py`（2 条）
+
+- `test_replay复制后evidence逐列与源行相等`：真 `Store` 建源研究（一帖 + 一条 `kind=comment` 带父链的评论），`import_research` 导到新 id，按 `PRAGMA table_info(evidence)` 逐列比源行与新行（除 id/report_id），并核新旧 id 不相交。
+- `test_夹具那条评论每一列都不是空也不是默认值`：反过来钉夹具——评论行每列非空且不等于表默认值，将来加列没进夹具先红，不让「默认值等于默认值」绿过去。
+
+### 红绿两侧
+
+| 侧 | 代码 | 命令 | 读数 |
+|---|---|---|---|
+| 红 | base fcf50f1（`git diff --quiet fcf50f1 -- app` 为真时跑） | `../Owli/.venv/bin/python -m pytest tests/test_d082_replay_copies_all_evidence_columns.py -q -p no:cacheprovider > var/goods3-red.txt` | EXIT 1；**1 failed / 1 passed**；判红原文：`AssertionError: replay 复制丢列（源值, 新值）：{"comment.kind": ["comment", "post"], "comment.parent_permalink": ["https://www.xiaohongshu.com/explore/d082post", null]}`——恰红在这两列，夹具守卫条绿 |
+| 绿·定向 | 改后 | 同上 + `test_rp1_stage_replay / test_d042_replay_stale_shards / test_d046_neighbor_sections / test_d081_claims_resilience / test_obs2_transcript` | EXIT 0，39 passed |
+| 绿·全量 | 改后 | `../Owli/.venv/bin/python -m pytest -q -p no:cacheprovider > var/goods3-pytest-full.txt; echo EXIT=$?`（00:32:49–00:33:24） | **EXIT=0；2246 passed / 3 skipped**（基线 2244/3 + 新增 2） |
+
+真数据复核（零引擎、副本）：用改后代码把源头 `r-20271e8a5028` 从 `var/copies/g3-wx1-replay-real.db`（wx1 快照的副本）导成新 id `r-fbbeb80cb3b3`（源 runs 用本包空目录）：复制 803 行；comment xhs 428 / douyin 57 / reddit 78、父链全非空；按 permalink 逐列比 30 列（除 id/report_id）**不等 0 行**。
