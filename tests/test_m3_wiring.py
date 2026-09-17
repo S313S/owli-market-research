@@ -781,7 +781,13 @@ def test_真实_Claude_Codex_适配器消费注册源并注入_source_MCP(
     command = build_codex_command(task, executable="codex")
 
     assert "owli_sources" in options.mcp_servers
-    assert "mcp__owli_sources__source.hacker_news" in options.allowed_tools
+    # §D-080 语义变更：这条断言原本写的是 `mcp__owli_sources__source.hacker_news`
+    # （带点），而 SDK 实际暴露的是带下划线的 `..._source_hacker_news`——尺子锁着的
+    # 正是被替换掉的那个**错**拼法，于是「Claude 路上每次信息源调用都被自家闸拒」
+    # 这件事从没被打红。⛔ 这不是「改尺子迁就实现」：真拼法由实测定（实测表见
+    # `app/adapters/source_mcp.py` 里 `_SDK_UNSAFE_NAME_CHARS` 上方），实现与尺子
+    # 一起跟着真机走。
+    assert "mcp__owli_sources__source_hacker_news" in options.allowed_tools
     joined = " ".join(command)
     assert "mcp_servers.owli_sources.command" in joined
     assert "app.adapters.source_mcp" in joined
