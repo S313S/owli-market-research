@@ -374,3 +374,119 @@ def test_尺子11_整份真稿零命中():
     if not path.is_file():
         pytest.skip("底料不在这台机器上")
     assert _ruler.check_ratio_phrases(path.read_text(encoding="utf-8")) == []
+
+
+# —— §D-083：降级区写成编号条目的行内前缀，闸也要认得出 ————————————————
+#
+# §REISSUE-1 第 2 轮实测：四节都写出来了，死在「对不同读者的含义」节的这道闸上
+# （rejects 第 10/11 行，gate=quote、streak 2 ⇒ 整节判失败、整轮中止，$7.77 白付）。
+# 写手两次都把降级区写成**编号条目标题的行内前缀**，不是另起一个 `## 值得进一步验证的方向`
+# 小节；闸只认 `#` 开头的行，看不见 break 点，照旧把降级过的条目判红。
+#
+# 下面的夹具正文取自真机原文：
+# `../Owli-reissue1/var/artifacts/round2-parts/04-对不同读者的含义.md`（第 2 轮 attempt 2 的产物，
+# 就是 rejects 第 11 行判红的那一份）。交叉维读数取自同一轮的
+# `r-3b3482ca7f8b.polished.consulting.tables.json`：S36/S27/S31 = PASS，S96/S08/S10/S38 = SINGLE。
+
+REAL_INLINE_PREFIX_ADVICE = (
+    "以下三条建议按“影响 × 把握度”排序，除第 1 条外均因证据单薄降级为"
+    "“值得进一步验证的方向”（共用规则 §6.5.4）：\n"
+    "\n"
+    "1. **把陪伴场景的用户第一人称原声沉淀成正向素材库**"
+    "（可同时供竞品对标、产品迭代与投研讲故事使用）\n"
+    "   依据：回指关键发现里陪伴场景的正向声浪；把握度：中"
+    "（S36 属抖音 C 级、S27 属微博 C 级、S96 属小红书 B 级，同向三源分布在三个平台）。\n"
+    "\n"
+    "2. **值得进一步验证的方向：把“豆包开始收费”这一话题落到用户具体接触面**"
+    "（下一轮先补一轮微博、小红书付费相关 UGC 与知乎问答的采集）\n"
+    "   依据：回指关键发现里付费议题；把握度：低"
+    "（S08 只有一条 B 级公众号报道、S31 一条 C 级微博自嘲）。\n"
+    "\n"
+    "3. **值得进一步验证的方向：办公与生产力场景的真实使用度**"
+    "（跳过自媒体转述，直接采集知乎、掘金与企业侧公开材料）\n"
+    "   依据：回指关键发现里“豆包工作模式”叙事；把握度：低"
+    "（S10 作者披露与相关产品存在利益关系、S38 仅有标题无正文）。\n"
+)
+#: 真机那一轮的交叉维读数，原样抄自 tables.json 的 `sources[].crossref`。
+REAL_CROSSREF = {36: "PASS", 27: "PASS", 96: "SINGLE",
+                 8: "SINGLE", 31: "PASS", 10: "SINGLE", 38: "SINGLE"}
+
+
+def test_d083_行内前缀之后的条目不再判红():
+    """① 真机死因这一条：base 上这里必红，红文与 rejects 第 11 行同形。"""
+    assert singlesource_advice(
+        REAL_INLINE_PREFIX_ADVICE.splitlines(), REAL_CROSSREF) == []
+
+
+def test_d083_行内前缀之前的孤证建议照旧判红():
+    """② 不许把闸修哑：前缀之前的条目该红还得红。
+
+    同一份真机原文，只把第 1 条撑着的三个角标读成全 SINGLE（别的一个字不改）——
+    第 1 条在降级区之前，必须照旧判红；第 3 条在降级区里，必须不再判红。
+    """
+    crossref = {**REAL_CROSSREF, 36: "SINGLE", 27: "SINGLE"}
+    problems = singlesource_advice(
+        REAL_INLINE_PREFIX_ADVICE.splitlines(), crossref)
+    assert len(problems) == 1, problems
+    assert "把陪伴场景的用户第一人称原声沉淀成正向素材库" in problems[0]
+
+
+def test_d083_句中顺口提一句不算降级区():
+    """③ 防放宽过头：只在条目号（和加粗标记）之后**紧接**该词才算降级区起点。
+
+    同一份真机原文，把两条的降级前缀都挪到句中（第 2 条顺口提一句、第 3 条改成普通建议）——
+    整篇里「值得进一步验证的方向」还出现 2 次（开头那句交代 + 第 2 条句中），
+    但一次都不在条目起始位置。
+    闸若放宽成「整行任意位置出现该词即 break」，第 2 条一提，第 3 条这条全孤证的建议
+    （S10/S38 都是 SINGLE）就跟着免检了——那是把闸修哑。
+    """
+    loose = REAL_INLINE_PREFIX_ADVICE.replace(
+        "2. **值得进一步验证的方向：把“豆包开始收费”这一话题落到用户具体接触面**",
+        "2. **把“豆包开始收费”这一话题落到用户具体接触面**"
+        "（这条也算值得进一步验证的方向）",
+    ).replace(
+        "3. **值得进一步验证的方向：办公与生产力场景的真实使用度**",
+        "3. **把办公与生产力场景的真实使用度摸清楚**")
+    assert loose.count("值得进一步验证的方向") == 2      # 词还在，只是都不在条目起始位置
+    assert "\n2. **值得" not in loose and "\n3. **值得" not in loose
+    problems = singlesource_advice(loose.splitlines(), REAL_CROSSREF)
+    assert len(problems) == 1, problems
+    assert "把办公与生产力场景的真实使用度摸清楚" in problems[0]
+
+
+def test_d083_共用规则把两种形态都写死了():
+    """货 2：⛔ 规则与闸不许各说各话——闸认哪两种，规则就得写哪两种。
+
+    §REISSUE-1 两轮白付，真因不是写手不听话，是规则里根本没写降级区长什么样：
+    写手按「写成『值得进一步验证的方向』」的字面照做，写成了条目标题的句中前缀。
+    """
+    from app.report.polish.run import DOWNGRADE_HEADING
+
+    rules = shared_rules()
+    assert "### 6.5.4" in rules and "降级区写成什么样" in rules
+    # 形态①：独立小标题；形态②：条目号之后紧挨着的起始前缀——两个范例都要原样在规则里。
+    assert f"### {DOWNGRADE_HEADING}" in rules
+    assert f"3. **{DOWNGRADE_HEADING}：" in rules
+    # 防放宽那一半也得写给写手看，否则他还是会写在句中。
+    assert "写在句子中间不算降级" in rules
+    # ⛔ 不许再说「放进附录」——闸只在本节内认 break，搬去附录等于没降级。
+    assert "放进附录" not in rules
+
+
+@pytest.mark.parametrize("template", [t.name for t in load_templates()])
+def test_d083_三份模板都把降级形态指回共用规则(template):
+    """三个模板各自的建议节都受同一道闸管，别只有咨询体写了形态。
+
+    量的是 `Template.body`——真正投给写手的那份，不是磁盘上随便一个 md。
+    """
+    body = next(t for t in load_templates() if t.name == template).body
+    assert "6.5.4" in body and "降级区写成什么样" in body, template
+
+
+def test_d083_闸管的四个节名在规则里都能查到降级怎么写():
+    """`ADVICE_SECTIONS` 里每个节名，都要能在三份模板 + 共用规则里找到交代。"""
+    from app.report.polish.run import ADVICE_SECTIONS
+
+    corpus = shared_rules() + "\n".join(t.body for t in load_templates())
+    for name in ADVICE_SECTIONS:
+        assert name in corpus, name
