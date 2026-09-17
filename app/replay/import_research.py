@@ -23,14 +23,8 @@ from typing import Any, Mapping
 
 from app.adapters.transcript import TRANSCRIPT_SUFFIX
 
-_EVIDENCE_COLUMNS = (
-    "goal_id", "agent_name", "engine", "platform", "source_type",
-    "platform_item_id", "permalink", "title", "content_excerpt", "author_name",
-    "author_meta", "source_keyword", "fetch_method", "published_at", "fetched_at",
-    "raw_metrics", "normalized_score", "norm_method", "norm_context",
-    "score_authority", "score_freshness", "score_crossref", "score_completeness",
-    "score_independence", "rating_notes", "rated_by", "citation_no", "extra",
-)
+#: 复制时重发、不从源行抄的列：新研究要新主键、挂到新 research 上。
+_EVIDENCE_IDENTITY_COLUMNS = frozenset({"id", "report_id"})
 
 _JSON_EVIDENCE_COLUMNS = frozenset(
     {"author_meta", "raw_metrics", "norm_context", "extra"}
@@ -215,6 +209,33 @@ def _rollback(store: Any, research_id: str, target_dir: Path) -> None:
         connection.close()
 
 
+def _evidence_columns(
+    store: Any, evidence: list[dict[str, Any]]
+) -> tuple[str, ...]:
+    """要从源行抄过去的 evidence 列：**目标库表结构**的全部列 ∩ 源行带的列 − 身份列。
+
+    §D-082：这里原是一份手写清单，§CMT-1 给 evidence 加了 `kind` / `parent_permalink`
+    没跟上，复制出来的评论全成了 dao 默认的 `kind='post'`、父链为空。改成读目标库
+    `PRAGMA table_info(evidence)`，加列就自动跟上。
+    - 交源行的列：源库 schema 比目标旧时缺的列不抄，落目标库默认值；
+    - `table_info` 不列生成列（`score_total` / `grade`），它们本来也不能写；
+    - 表里有但 dao 不认的列，`add_evidence_batch` 会当场抛 TypeError——要响，不要静默丢。
+    """
+
+    connection = sqlite3.connect(_database_of(store))
+    try:
+        table = [str(row[1]) for row in connection.execute("PRAGMA table_info(evidence)")]
+    finally:
+        connection.close()
+    if not table:
+        raise ReplayImportError("目标库没有 evidence 表，无法复制证据")
+    present = set().union(*(row.keys() for row in evidence))
+    return tuple(
+        column for column in table
+        if column not in _EVIDENCE_IDENTITY_COLUMNS and column in present
+    )
+
+
 def _database_of(store: Any) -> str:
     path = getattr(store, "_database_path", None)
     if path is None:
@@ -262,6 +283,7 @@ def _write(
     shutil.copytree(source_dir, target_dir)
 
     if evidence:
+        columns = _evidence_columns(store, evidence)
         store.add_evidence_batch([
             {
                 "id": f"ev-{uuid.uuid4().hex[:20]}",
@@ -272,7 +294,7 @@ def _write(
                         if column in _JSON_EVIDENCE_COLUMNS and row[column] is not None
                         else row[column]
                     )
-                    for column in _EVIDENCE_COLUMNS
+                    for column in columns
                 },
             }
             for row in evidence
