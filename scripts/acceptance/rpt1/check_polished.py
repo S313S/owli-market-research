@@ -336,6 +336,69 @@ def check_advice_gate(markdown: str, template, crossref: dict[int, str]) -> list
             for p in _advice_entry_problems(bodies[name], crossref)]
 
 
+def _opening_body(markdown: str, template) -> str:
+    """开篇节（执行摘要 / 总体倾向）的正文。⑱⑲ 都只量这一节。"""
+    bodies = _section_bodies(markdown)
+    opening = next((name for name in template.sections if name in OPENING_SECTIONS), None)
+    return "\n".join(bodies.get(opening) or []) if opening else ""
+
+
+def check_confidence_tiers(markdown: str, template, sources, tables) -> list[str]:
+    """§RPT-8 ⑱：那句总括把握度要与逐条关键发现汇总出来的档一致。
+
+    判词函数与写作期门禁是**同一个** `run.confidence_mismatch`——同一个概念两处
+    两个定义，是本项目现形过的一种假绿（⑧ 与 §WRITE-1 货 4 同一条路）。
+    """
+    from app.report.polish.run import confidence_mismatch
+
+    return confidence_mismatch(_opening_body(markdown, template), sources, tables)
+
+
+def check_title_within_evidence(markdown: str, template, sources, tables) -> list[str]:
+    """§RPT-8 ⑲：把握度低的那几条发现，标题不得大过证据。
+
+    摘要那几条发现行用 `run.oversized_finding_lines`；展开那几节的二级标题按
+    **出现次序**对上发现（切片本来就是按次序切的），条数对不上就只判发现行——
+    对不上时硬猜一个映射，判词会指错条，比不判更费事。
+    """
+    from app.report.polish.run import Finding, oversized_shard_title, oversized_finding_lines
+    from app.report.polish.sharding import parse_findings
+
+    opening = _opening_body(markdown, template)
+    problems = list(oversized_finding_lines(opening, sources, tables))
+    findings = parse_findings(opening)
+    titles = _findings_subheadings(markdown, template)
+    if findings and len(titles) == len(findings):
+        for finding, title in zip(findings, titles):
+            problems += oversized_shard_title(
+                f"## {title}", Finding(finding.index, finding.text, finding.marks),
+                sources, tables)
+    return problems
+
+
+def _findings_subheadings(markdown: str, template) -> list[str]:
+    """「关键发现」那一节下的二级标题，按出现次序。模板没有这一节就返回空表。"""
+    section = next((n for n in template.sections if n == "关键发现"), None)
+    if section is None:
+        return []
+    return [line[3:].strip() for line in _section_bodies(markdown).get(section, [])
+            if line.startswith("## ")]
+
+
+def check_advice_evidence_strength(markdown: str, template, sources, tables) -> list[str]:
+    """§RPT-8 ⑳：建议只能从够格的发现推；不够格的要么降级、要么写明证据强度。
+
+    与 ⑧ 分工不重叠：⑧ 看交叉验证结论，本条看证据强度。两条切的是同一批编号条目
+    （`run.advice_entries`），判词函数同样与写作期门禁共用（`run.weakevidence_advice`）。
+    """
+    from app.report.polish.run import weakevidence_advice
+
+    bodies = _section_bodies(markdown)
+    return [p for name in resolved_sections(markdown, template)
+            if name in ADVICE_SECTIONS and name in bodies
+            for p in weakevidence_advice(bodies[name], sources, tables)]
+
+
 def _advice_entry_problems(lines: list[str], crossref: dict[int, str]) -> list[str]:
     """判据函数与生产侧门禁是**同一个** `run.singlesource_advice`。
 
@@ -750,7 +813,13 @@ CHECKS = ("① 无内部词", "② 一级标题齐", "③ 角标不越池", "④
           "⑨ 管道自诊不占主体节", "⑩ 摘要样本数口径", "⑪ 不许推及全网",
           "⑫ 假设与不确定性只写一次", "⑬ 只出表不出图", "⑭ 原声是人说的话",
           "⑮ 归因只引该格内的角标", "⑯ 表格一格 ≤3 个角标",
-          "⑰ 原声表只在附录")
+          "⑰ 原声表只在附录",
+          # §RPT-8 新增三条，判词函数与生产侧门禁**是同一批**（`run.confidence_mismatch` /
+          # `run.oversized_finding_lines` / `run.weakevidence_advice`），这边只留薄壳。
+          # ⚠️ 它们在 2026-09-18 那份第三轮稿上判红是**预期**：那正是用户读出来的三处
+          # 毛病（整篇一刀切判低、标题比证据大、建议超出证据），是下一版稿要修的内容，
+          # 不是本包的红。前 ⑰ 条对那份稿仍全过。
+          "⑱ 把握度按条分层", "⑲ 标题不得大过证据", "⑳ 建议与证据强度匹配")
 #: 判黄的那些：报出来给人看，但不掀掉这一格。红一格 = 写手整节重写（实测 60–80 分钟），
 #: 文风密度这种事不值当付这个钱；调度 09-07 拍的也是「>2 判黄」。
 WARNINGS = ("⒜ 限定句密度", "⒝ 篇幅",
@@ -867,6 +936,9 @@ def run(md_path: Path, tables_path: Path, work_path: Path) -> dict[str, list[str
     _numbers_from(data.get("counts"), allowed)
     crossref = {int(s["mark"][1:]): str(s["crossref"]) for s in data.get("sources") or []
                 if s.get("crossref")}
+    # §RPT-8 ⑱⑲⑳ 的三个读数都在这两处，原样传下去、⛔ 不在这里重算一遍。
+    sources = data.get("sources") or []
+    tables = data.get("tables") or {}
     entities = [str(e) for e in (data.get("entities") or [])]
     # 中文表名：写手标溯源用的就是这些名字（`build_prompt` 只把中文名投给它）。
     table_titles = [str(t.get("title") or "") for t in (data.get("tables") or {}).values()
@@ -894,6 +966,12 @@ def run(md_path: Path, tables_path: Path, work_path: Path) -> dict[str, list[str
         CHECKS[14]: check_cell_attribution(markdown, data.get("tables") or {}),
         CHECKS[15]: check_marks_per_cell(markdown),
         CHECKS[16]: check_quotes_table_not_in_body(markdown),
+        # §RPT-8：三条新判据读的是每条源自己的等级/交叉验证结论/出处独立性，
+        # 加上编码表那一格的条数——读数不全时三条函数各自返回空表（`tiering_available`），
+        # 老形态的稿因此行为不变。
+        CHECKS[17]: check_confidence_tiers(markdown, template, sources, tables),
+        CHECKS[18]: check_title_within_evidence(markdown, template, sources, tables),
+        CHECKS[19]: check_advice_evidence_strength(markdown, template, sources, tables),
     }
     if pool != work_marks:
         findings[CHECKS[2]].append(

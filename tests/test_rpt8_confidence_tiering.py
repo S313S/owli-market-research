@@ -238,18 +238,22 @@ def test_货4_一条都没进池时说清是取数缺口_不是没人这么说()
 
 # ── 货 4②：单人线索节 ────────────────────────────────────────────────────
 
-CLAIM_ROWS = [{"id": "ev-1", "citation_no": 11}, {"id": "ev-2", "citation_no": 27},
-              {"id": "ev-3", "citation_no": 31}, {"id": "ev-4", "citation_no": 40},
-              {"id": "ev-5", "citation_no": 41}]
+#: ⚠️ `ev-3`（Windows 输入法那条）**没有 citation_no**——真机实测：用户点名要的那五条
+#: 信号，`citation_no` 全是 None，它们是 C 级评论、本轮压根没进引用池。要求带角标
+#: 等于把这一货要的东西全筛掉，所以线索**不要求进池**，没进池的写明点不到原文。
+CLAIM_ROWS = [{"id": "ev-1", "citation_no": 11, "platform": "hacker_news"},
+              {"id": "ev-2", "citation_no": 27, "platform": "weibo"},
+              {"id": "ev-3", "citation_no": None, "platform": "xhs"},
+              {"id": "ev-4", "citation_no": 40, "platform": "xhs"},
+              {"id": "ev-5", "citation_no": 41, "platform": "xhs"}]
 CLAIMS = [
     {"verdict": "SINGLE", "firsthand": ["ev-3"], "evidence_ids": ["ev-3"],
      "text": "小红书评论区有用户明确反馈 Windows 端豆包输入法起步晚、体验落后于微信输入法。"},
     {"verdict": "SINGLE", "firsthand": ["ev-2"], "evidence_ids": ["ev-2"],
      "text": "微博有用户自述每天和豆包打视频电话、称「要疯了」。"},
-    # 海外平台：§RPT-4 有意加的旁证闸，本块照它办。⛔ 不绕过。
+    # 海外平台 / 对照实体：§RPT-4 有意加的旁证闸，本块照它办。⛔ 不绕过。
     {"verdict": "SINGLE", "firsthand": ["ev-1"], "evidence_ids": ["ev-1"],
      "text": "Reddit 玩家因游戏素材遗留豆包水印而抱怨开发者偷懒。"},
-    # 对照实体：同上。
     {"verdict": "SINGLE", "firsthand": ["ev-4"], "evidence_ids": ["ev-4"],
      "text": "有用户反馈 DeepSeek 的联网检索更稳。"},
     # 不是单源孤证 ⇒ 它撑得起结论，该进正文而不是线索区。
@@ -258,30 +262,47 @@ CLAIMS = [
     # 不是亲历：转述的不进。
     {"verdict": "SINGLE", "firsthand": [], "evidence_ids": ["ev-5"],
      "text": "有媒体转述称豆包用户量大涨。"},
+    # 自己写着「噪声」的不是线索，是各章留的登记备注。
+    {"verdict": "SINGLE", "firsthand": ["ev-5"], "evidence_ids": ["ev-5"],
+     "text": "另有一条评论只求头像图，与豆包无直接关联，仅登记为长尾噪声。"},
 ]
 
 
-def test_货4_线索只收单源亲历进了池且不是旁证的() -> None:
-    clues = _clues(CLAIMS, CLAIM_ROWS,
-                   contrast_by_mark={11: False, 27: False, 31: False, 40: True, 41: False},
-                   platform_by_mark={11: "hacker_news", 27: "weibo", 31: "xhs",
-                                     40: "xhs", 41: "xhs"},
-                   question="国内大家对豆包的看法")
-    assert [c["mark"] for c in clues] == ["S27", "S31"], clues
-    assert "Windows 端" in clues[1]["text"] and "要疯了" in clues[0]["text"]
+def test_货4_线索只收单源亲历非旁证_且不要求进引用池() -> None:
+    clues = _clues(CLAIMS, CLAIM_ROWS, offtopic_ids={"ev-1", "ev-4"})
+    assert [c["mark"] for c in clues] == [None, "S27"], clues
+    assert "Windows 端" in clues[0]["text"] and clues[0]["platform"] == "小红书"
+    assert "要疯了" in clues[1]["text"]
+    # 按主张在库里的登记次序，⛔ 不按字数（最长的那句往往是最啰嗦的那句）。
+    assert clues[0]["text"].startswith("小红书评论区有用户明确反馈")
 
 
 def test_货4_线索节挂附录_说死未经交叉验证且不进关键发现() -> None:
-    block = clues_block([{"mark": "S31", "text": "Windows 端输入法落后于微信输入法。"},
-                         {"mark": "S27", "text": "每天打视频电话，要疯了。"}])
+    block = clues_block([{"mark": None, "platform": "小红书",
+                          "text": "Windows 端输入法落后于微信输入法。"},
+                         {"mark": "S27", "platform": "微博",
+                          "text": "每天打视频电话，要疯了。"}])
     assert block.startswith(CLUES_HEADING) and CLUES_HEADING in PROGRAM_APPENDIX_HEADINGS
     assert "未经交叉验证" in CLUES_HEADING and "不是结论" in CLUES_HEADING
     assert "不进关键发现" in block and "也不做建议的依据" in block
-    assert "- Windows 端输入法落后于微信输入法。[S31]" in block
+    # 摆成表：尺子④ 按行扫数字，表格行整行跳过（线索原文常带数字）。
+    assert "| 线索 | 出处 |" in block
+    assert "| Windows 端输入法落后于微信输入法。 | 小红书评论 · 本轮未进引用池，点不到原文 |" in block
+    assert "| 每天打视频电话，要疯了。 | [S27] |" in block
     # 正文已经引过的不再摆一遍。
-    assert "S31" not in clues_block(
-        [{"mark": "S31", "text": "Windows 端输入法落后。"}], exclude=[31])
+    assert "S27" not in clues_block(
+        [{"mark": "S27", "text": "每天打视频电话。"}], exclude=[27])
     assert clues_block([]) == ""
+
+
+def test_货4_封顶封在剔除之后_不许把该露面的挡在名额外() -> None:
+    """⛔ 先封顶再剔除会把用户点名要的那几条挤掉——本包实测踩过（8 条筛完只剩 2 条）。"""
+    from app.report.polish.tables import CLUE_LIMIT
+
+    pool = [{"mark": f"S{n:02d}", "text": f"线索{n}。"} for n in range(1, CLUE_LIMIT + 4)]
+    kept = clues_block(pool, exclude=list(range(1, CLUE_LIMIT + 1)))
+    assert kept.count("| 线索") == 4, "剔除之后还该补满名额（表头 1 行 + 3 条）"
+    assert f"S{CLUE_LIMIT + 1:02d}" in kept
 
 
 def test_货4_带内部标记的线索宁可不放() -> None:
@@ -330,6 +351,127 @@ def test_货5_编号之前那一段不是建议_不判它() -> None:
     lines = ["- **对竞品团队**：差异化不宜只比聊天参数[S17][S21]。", *ADVICE]
     assert len(advice_entries(lines)) == 3
     assert all("对竞品团队" not in p for p in weakevidence_advice(lines, SOURCES, TABLES))
+
+
+# ── 验收尺子 ⑱⑲⑳：判词函数与写作期门禁共用同一批 ────────────────────────
+
+_RULER_MD = """# 执行摘要
+
+摘要一段[S19]。
+
+1. 【B】媒体侧已把豆包定位切到办公与生产力入口[S01][S10]
+2. 【B】两篇媒体文章显示豆包在 2026 年出现付费转向[S08][S31]
+3. 【B】本轮样本里用户侧最鲜活的场景是生活娱乐[S19][S36]
+4. 【B】同一个帖子下的两条评论都指向语音演唱[S17][S21]
+
+> 本报告结论的把握度为**高**，主要因为证据充分。
+
+# 关键发现
+
+## 用户普遍把豆包当办公入口
+
+正文[S01][S10]。
+
+## 豆包以三级订阅把办公能力推向付费
+
+正文[S08][S31]。
+
+## 用户的鲜活记忆来自生活娱乐
+
+正文[S19][S36]。
+
+## 负向声音落在语音演唱这一交互点
+
+正文[S17][S21]。
+
+# 论据与数据
+
+## 四个对手各有能力标签
+
+正文[S19]。
+
+# 建议
+
+1. **本产品团队把「可验证」设为默认机制**
+   依据：回指第 4 条发现[S17][S21]。
+
+# 附录
+
+## 方法与样本
+
+正文。
+
+## 假设与不确定性
+
+正文。
+"""
+
+
+def _ruler(tmp_path: Path, markdown: str) -> dict[str, list[str]]:
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts/acceptance/rpt1"))
+    import check_polished
+
+    md = tmp_path / "r-t.polished.consulting.md"
+    md.write_text(markdown, encoding="utf-8")
+    tables = tmp_path / "r-t.polished.consulting.tables.json"
+    tables.write_text(json.dumps({
+        "entities": ["豆包"], "counts": {}, "sources": SOURCES, "tables": TABLES,
+    }, ensure_ascii=False), encoding="utf-8")
+    work = tmp_path / "work.md"
+    work.write_text("".join(f"[{s['mark']}]" for s in SOURCES), encoding="utf-8")
+    return check_polished.run(md, tables, work)
+
+
+def test_尺子_三条新判据各自判红_判词与写作期门禁同源(tmp_path: Path) -> None:
+    findings = _ruler(tmp_path, _RULER_MD)
+    assert any("写的是「高」" in p for p in findings["⑱ 把握度按条分层"])
+    # ⑲ 两半都要量得到：摘要那条发现行（第 1 条读不出规模）+ 二级标题的普遍化断言。
+    titles = findings["⑲ 标题不得大过证据"]
+    assert any("读不出它的证据有多大" in p for p in titles), titles
+    assert any("普遍" in p for p in titles), titles
+    assert any("撑不起一句行动建议" in p for p in findings["⑳ 建议与证据强度匹配"])
+
+
+def test_尺子_写对了就全过_三条不误伤(tmp_path: Path) -> None:
+    good = (_RULER_MD
+            .replace("1. 【B】媒体侧已把豆包定位切到办公与生产力入口",
+                     "1. 【B】两篇公众号文章把豆包划进办公与生产力入口这一档")
+            .replace("> 本报告结论的把握度为**高**，主要因为证据充分。",
+                     "> 本报告结论的把握度为**低**，主要因为四条里两条还立不住。")
+            .replace("## 用户普遍把豆包当办公入口", "## 两篇媒体把豆包划进办公入口这一档")
+            .replace("   依据：回指第 4 条发现[S17][S21]。",
+                     "   依据：回指第 4 条发现[S17][S21]；把握度：低（只有同帖两条评论）。"))
+    findings = _ruler(tmp_path, good)
+    for name in ("⑱ 把握度按条分层", "⑲ 标题不得大过证据", "⑳ 建议与证据强度匹配"):
+        assert findings[name] == [], (name, findings[name])
+    # 老的 ⑰ 条一条都不许被本包带红。
+    assert all(not v for k, v in findings.items()
+               if k not in ("⑱ 把握度按条分层", "⑲ 标题不得大过证据", "⑳ 建议与证据强度匹配")), \
+        {k: v for k, v in findings.items() if v}
+
+
+def test_尺子_读数不全时三条都不判_老形态的稿行为不变(tmp_path: Path) -> None:
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts/acceptance/rpt1"))
+    import check_polished
+
+    md = tmp_path / "r-t.polished.consulting.md"
+    md.write_text(_RULER_MD, encoding="utf-8")
+    tables = tmp_path / "r-t.polished.consulting.tables.json"
+    tables.write_text(json.dumps({
+        "entities": ["豆包"], "counts": {}, "sources": SOURCES,
+        "tables": {"crossref_mix": TABLES["crossref_mix"]},   # 没有已编码 UGC
+    }, ensure_ascii=False), encoding="utf-8")
+    work = tmp_path / "work.md"
+    work.write_text("".join(f"[{s['mark']}]" for s in SOURCES), encoding="utf-8")
+    findings = check_polished.run(md, tables, work)
+    for name in ("⑱ 把握度按条分层", "⑲ 标题不得大过证据", "⑳ 建议与证据强度匹配"):
+        assert findings[name] == [], name
 
 
 # ── 规则也要锁：纯文档不锁会漂（§D-083 的教训） ──────────────────────────

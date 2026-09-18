@@ -650,7 +650,10 @@ def confidence_tables(tables: Mapping[str, Any],
         for index, tier, reason in tiers:
             lines.append(f"| 第 {index} 条 | {tier} | {reason} |")
         overall = overall_confidence([tier for _, tier, _ in tiers])
-        lines += ["", f"整篇那句总括取各条的中位档（条数为偶数时取偏低的那一个），"
+        # ⚠️ 这一句里**不许写「偏低」**：它是尺子⑥ 的评价词，会被判成「没写清在说谁」。
+        # 本包的整跑前离线复核当场抓到（`var/rpt8/after-draft-check.txt` 第一版）——
+        # 程序块自己也要过尺子，写的时候容易忘。
+        lines += ["", f"整篇那句总括取各条的中位档（条数为偶数时取更弱的那一档），"
                       f"本稿是「{overall}」。一条发现要判「高」，"
                       f"得同时做到：来自 ≥2 个互相独立的出处、跨 ≥2 个平台、"
                       f"最强证据是 A 或 B 级、有别的来源印证过、"
@@ -687,6 +690,9 @@ def confidence_tables(tables: Mapping[str, Any],
 #: 主张原文是各章 agent 写的，偶尔带 `goal-1`、`ch-3` 这类切块标记，照抄进附录
 #: 就成了尺子①的红。宁可少放一条线索，也不放一条带内部标记的进去。
 _CLUE_REJECT = re.compile(r"goal-\d|sec-\d|ch-\d|本片|本节样本|本章样本|上游目标|[\w/.-]+\.py")
+#: 附录线索区最终摆几条。⛔ 一处定义：从 `tables` 那边取，别在这里另写一个数——
+#: 候选池上限（`CLUE_POOL`）与呈现上限是两件事，两处各写一个数迟早对不上。
+from app.report.polish.tables import CLUE_LIMIT  # noqa: E402
 
 
 def clues_block(clues: Sequence[Mapping[str, Any]], exclude: Iterable[int] = ()) -> str:
@@ -694,26 +700,45 @@ def clues_block(clues: Sequence[Mapping[str, Any]], exclude: Iterable[int] = ())
 
     **为什么归程序、归附录，而不是让写手写进正文**：§SEL-1 09-18 查实，写手把 79 条
     池位一条不漏全引了，丢是丢在正式稿改写那一层；而写手正文已经 8 674 字符、
-    模板带宽上限 9 000——再要它多写一节，只能靠删别处（限定句是最先被删的那种）。
+    模板带宽上限 9 000——再要它多写一节只能靠删别处（限定句是最先被删的那种）。
     程序块不计入写手篇幅（`check_polished.writer_body` 按 `PROGRAM_APPENDIX_HEADINGS`
     剜掉程序块），所以这一节是**加出来的**，不是换来的。
 
-    `exclude` 给正文已经引过的角标：正文写过的就不在这里再摆一遍
-    （同一条东西出现两次，读者第二次只会跳过——§RPT-3 货 3 同一条教训）。
+    **为什么摆成表而不是列表**：验收尺子④「数字有出处」按行扫正文数字，表格行它整行
+    跳过。线索原文里带数字（「用了俩礼拜」「三级订阅」）很常见，而这些数字的出处就是
+    那条评论本身、不在任何一张聚合表里——摆成列表会一条条判红。
+
+    `exclude` 给正文已经引过的角标：正文写过的就不在这里再摆一遍（同一条东西出现两次，
+    读者第二次只会跳过）。⚠️ **封顶封在剔除之后**——反过来会把该露面的那几条挡在
+    名额之外（本包实测踩过，8 条筛完只剩 2 条且全不是要的）。
     """
     skipped = {int(n) for n in exclude or ()}
-    rows = [c for c in clues or []
-            if isinstance(c, Mapping) and c.get("text") and c.get("mark")
-            and int(str(c["mark"])[1:]) not in skipped
-            and not _CLUE_REJECT.search(str(c["text"]))]
+    rows = []
+    for clue in clues or []:
+        if not isinstance(clue, Mapping) or not clue.get("text"):
+            continue
+        mark = str(clue.get("mark") or "")
+        if mark and int(mark[1:]) in skipped:
+            continue
+        if _CLUE_REJECT.search(str(clue["text"])):
+            continue
+        rows.append(clue)
+        if len(rows) >= CLUE_LIMIT:
+            break
     if not rows:
         return ""
     lines = [CLUES_HEADING, "",
              "下面每一条都只有**一个人、一条内容**说过，本轮没有第二个来源印证，"
              "所以它们不进关键发现、也不做建议的依据。列在这里是因为它们足够具体，"
-             "值得下一轮专门去核：核实了就是结论，核不出来就该划掉。"]
+             "值得下一轮专门去核：核实了就是结论，核不出来就该划掉。",
+             "", "| 线索 | 出处 |", "|---|---|"]
     for clue in rows:
-        lines.append(f"- {clue['text']}[{clue['mark']}]")
+        mark = str(clue.get("mark") or "")
+        where = (f"[{mark}]" if mark
+                 else f"{clue.get('platform') or '社媒'}评论 · 本轮未进引用池，点不到原文")
+        lines.append(f"| {clue['text']} | {where} |")
+    lines += ["", f"共 {len(rows)} 条。没有角标的那几条是本轮**没进引用池**的证据——"
+                  f"库里有这条内容、正文点不到它的原文，要核得下一轮重新采。"]
     return "\n".join(lines) + "\n"
 
 
@@ -1515,7 +1540,7 @@ def confidence_mismatch(markdown: str, sources: Sequence[Mapping[str, Any]],
         return []
     listed = "、".join(f"第 {i} 条{t}" for i, t in enumerate(tiers, 1))
     return [f"那句总括把握度写的是「{said}」，但按各条关键发现自己引的证据汇总出来是"
-            f"「{expected}」（{listed}；取中位档，偶数条取偏低的那一个）。"
+            f"「{expected}」（{listed}；取中位档，偶数条取更弱的那一档）。"
             f"把那句改成「{expected}」并把理由改成一句人话——⛔ 不许改各条的角标来凑档位。"]
 
 
