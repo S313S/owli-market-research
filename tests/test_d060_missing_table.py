@@ -12,7 +12,8 @@ import importlib.util
 import re
 from pathlib import Path
 
-from app.report.polish.run import missing_table
+from app.report.polish.run import (COLLECTED_HEADING, MISSING_HEADING,
+                                   PROCESS_HEADING, missing_table)
 from app.report.polish.tables import chapter_rows
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +69,31 @@ def _rows():
 
 
 def _lines(md: str) -> list[str]:
-    return [ln for ln in md.splitlines() if ln.startswith("| ") and "缺的是哪一段" not in ln]
+    """§RPT-7 前的取法：整份产物只有一张表，按出现顺序取数据行。
+
+    ⚠️ 只剩「不给 chapters」那一路还在用它——那一路仍旧只出一张表，逐字未变。
+    """
+    lines = md.splitlines()
+    return [ln for index, ln in enumerate(lines)
+            if ln.startswith("| ") and lines[index + 1:index + 2] != ["|---|---|"]]
+
+
+def _rows_of(md: str, heading: str) -> list[str]:
+    """§RPT-7 货 1 之后：一份产物最多三张表，行要按表取。
+
+    旧版 `_lines` 把三张表的行拉平了按下标断言，换表之后下标全串位——
+    那不是「尺子被作弊改了」，是它锁的正是被替换掉的那条语义（一张表装三件事）。
+    """
+    lines = md.splitlines()
+    out: list[str] = []
+    current = ""
+    for index, line in enumerate(lines):
+        if line.startswith("## "):
+            current = line.strip()
+        elif (line.startswith("| ") and current == heading
+              and lines[index + 1:index + 2] != ["|---|---|"]):
+            out.append(line)
+    return out
 
 
 # ── 造红：旧口径对本研究四行的字面，与 09-11 成稿第 ③ 行相同 ─────────────────
@@ -81,11 +106,15 @@ def test_old_wording_calls_111_reddit_rows_not_collected():
 def test_new_wording_says_collected_but_timed_out():
     chapters = chapter_rows(PLAN, _rows())
     md = missing_table(MISSING, OBJECTIVES, chapters=chapters)
-    lines = _lines(md)
+    # §RPT-7 货 1：有货的章从「哪些没采到」搬到了「采到了但没写成段落」，措辞未变。
+    lines = _rows_of(md, COLLECTED_HEADING)
     # §RPT-3 货 5 改了文案：「未纳入本章分析」失实——这些行照常评级、进统计表，缺的只是角标。
     tail = "已入库并参与评级与统计；这一段的总结超时没写成，正文未能引用它们"
-    assert lines[2] == f"| Reddit（豆包） | 采到 111 条，{tail} |"
+    assert lines[1] == f"| Reddit（豆包） | 采到 111 条，{tail} |"
     assert lines[0] == f"| 小红书（豆包） | 采到 296 条，{tail} |"
+    assert _rows_of(md, MISSING_HEADING) == [
+        "| 微信公众号（文心一言） | 这一段的信息渠道正常跑通、没报错，"
+        "是它在本次检索范围内确实没有相关内容 |"]
 
 
 def test_yield_is_counted_by_agent_not_by_the_mislabelled_goal():
@@ -105,7 +134,7 @@ def test_a_real_gap_still_names_the_channel_and_is_not_erased():
     「真缺照样列出来、并且写清是哪个渠道」。
     """
     md = missing_table(MISSING, OBJECTIVES, chapters=chapter_rows(PLAN, _rows()))
-    row = _lines(md)[1]
+    (row,) = _rows_of(md, MISSING_HEADING)
     assert row.startswith("| 微信公众号（文心一言） |")
     assert "确实没有相关内容" in row and "没采到" not in row
 
@@ -113,12 +142,14 @@ def test_a_real_gap_still_names_the_channel_and_is_not_erased():
 def test_timeout_with_zero_rows_keeps_the_old_reason():
     rows = [r for r in _rows() if r["agent_name"] != "data-collection-6"]
     md = missing_table(MISSING, OBJECTIVES, chapters=chapter_rows(PLAN, rows))
-    assert _lines(md)[2] == "| Reddit（豆包） | 这一段采集超时没跑完 |"
+    # 一条都没入库的采集章：仍是「没采到」，仍走采集口径的理由句。
+    assert _rows_of(md, MISSING_HEADING)[1] == "| Reddit（豆包） | 这一段采集超时没跑完 |"
 
 
 def test_report_section_names_the_goal_and_the_section_not_the_ids():
     md = missing_table(MISSING, OBJECTIVES, chapters=chapter_rows(PLAN, _rows()))
-    assert _lines(md)[3].startswith(
+    # §RPT-7 货 1：撰写章不是采集章，归「哪些环节没跑完」；段落名的写法一字未改。
+    assert _rows_of(md, PROCESS_HEADING)[0].startswith(
         "| 「国内同类AI助手竞品对照素材采集」的报告·第 1 节（豆包官方产品定位与功能资料采集） |")
     assert _forbidden_hits(md) == [], _forbidden_hits(md)
 

@@ -117,13 +117,24 @@ def clear_stale_parts(runs_root: Path, research_id: str, template: str) -> list[
 #: 尺子按它切掉程序块再量写手的篇幅——同一个概念两处两个定义是本项目现形过的假绿。
 SOURCES_HEADING = "## 信息源清单"
 MISSING_HEADING = "## 哪些没采到"
+#: §RPT-7 货 1：从「哪些没采到」拆出去的两节。用户 09-18 读第三轮正式稿圈出那张表问
+#: 「这是什么情况」——他在一张表里同时看见了三件根本不同的事：真的一条没采到、
+#: 采到了只是没写成段、以及压根不在采的内部处理环节。一张表答不了三个问题。
+#:
+#: ⛔ 标题不写「采到了但没写进正文」：HN 那一行 `cited=2`（S38 在正文真被引），
+#: 「没写进正文」对它就是假话，和货 3 ① 要堵的是同一类。缺的确实只有「没写成一段」。
+COLLECTED_HEADING = "## 采到了但没写成段落"
+#: ⛔ 不写「工序」：制造业的词，客户未必立刻对上号；而且这一节除了内部处理步骤，
+#: 还会收「报告·第 N 节」这种没写成的撰写章，「环节」两头都罩得住。
+PROCESS_HEADING = "## 哪些环节没跑完"
 BASIS_HEADING = "## 各表口径"
 CONFIDENCE_HEADING = "## 把握度读数（主张的交叉验证与被引证据等级）"
 LEXICON_HEADING = "## 词表命中参考（只数触发词，不是情感判断）"
 QUOTES_HEADING = "## 代表原声（逐字摘录，按互动量排序）"
 CONTRAST_HEADING = "## 对照实体的评论（只作参照，不计入正文态度表）"
 TIMESPAN_HEADING = "## 证据的时间范围"
-PROGRAM_APPENDIX_HEADINGS = (MISSING_HEADING, BASIS_HEADING, LEXICON_HEADING,
+PROGRAM_APPENDIX_HEADINGS = (MISSING_HEADING, COLLECTED_HEADING, PROCESS_HEADING,
+                             BASIS_HEADING, LEXICON_HEADING,
                              QUOTES_HEADING, SOURCES_HEADING, CONFIDENCE_HEADING,
                              CONTRAST_HEADING, TIMESPAN_HEADING)
 
@@ -297,6 +308,25 @@ _YIELDED_TAIL = {
 _YIELDED_TAIL_DEFAULT = "这一段没能记成完整的一段，但内容本身没丢"
 
 
+def _yielded_tail(entry: Mapping[str, Any], reason: str) -> str:
+    """「采到 N 条…」后面那半句。"""
+    return _YIELDED_TAIL.get(reason, _YIELDED_TAIL_DEFAULT)
+
+#: §RPT-7 货 1：**非采集章**的理由码人话。与 `_MISSING_REASON` 是两套，因为那一套
+#: 每一句都带「采集」——套到一条都不在采的章上（打标签、一致性检查、报告撰写），
+#: 「这一段采集超时没跑完」就是凭空给客户报了一次采集故障。09-18 真机三行全踩这一条。
+#: 章型是闭集（`app/plan/chapters.py:CHAPTER_TYPES`），⛔ 分流按 `chapter_type`，不按章名猜。
+_PROCESS_REASON = {
+    "timeout": "这一步超时没跑完",
+    "empty_result": "这一步正常跑通、没报错，但没有产出内容",
+    "conclusion_invalid": "这一步写出来了但没通过结论校验，未采用",
+    "retry_exhausted": "这一步重试用尽仍未成功",
+    "blocked": "这一步被权限或风控挡住",
+    "tool_unavailable": "这一步用的工具当时接不上（没配好或没连通），没跑完",
+    "quota_exhausted": "这一步用的接口额度用完了，没跑完",
+}
+
+
 def _chapter_label(entry: Mapping[str, Any], section: str | None,
                    goal_titles: Sequence[str]) -> str:
     """「缺的是哪一段」：缺的单位是单源子章，不是整个目标——写「渠道（实体）」。"""
@@ -329,13 +359,17 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
       没写成，正文未能引用它们」（§RPT-3 货 5：旧文案「未纳入本章分析」失实——那些行照常
       评级、照常进平台分布等统计表，真正缺的只是角标）。
       §D-039 之后 timeout 的语义是「超时判 missing、已落库产物不作废」，写「没采到」是假话。
-    不给 `chapters`（老调用方、老产物）行为逐字不变。
+
+    §RPT-7 货 1：一张表变三张，按**账本查得到的两件事**分流，⛔ 不按章名猜——
+    - `yielded > 0`：内容在库里，缺的只是没写成一段 ⇒ `COLLECTED_HEADING`；
+    - `chapter_type != collection`：这一章压根不在采（打标签、一致性检查、报告撰写）
+      ⇒ `PROCESS_HEADING`，理由句走 `_PROCESS_REASON`，一个「采集」字都不带；
+    - 其余（真的是采集章、真的一条没入库）才留在 `MISSING_HEADING`。
+    对不上章的行（源对账那路 `chapter_id=source/<平台>`）章型未知，仍留在原表不猜。
+    不给 `chapters`（老调用方、老产物）行为逐字不变——三张表只有第一张会非空。
     """
     if not missing:
         return f"{MISSING_HEADING}\n\n（本次调研没有缺失的采集段落。）\n"
-    lines = [MISSING_HEADING, "",
-             "（本节由程序按调研过程记录生成。）", "",
-             "| 缺的是哪一段 | 为什么缺 |", "|---|---|"]
     # 段落名用**这一段在采什么**（目标原话），不用 `goal-x/ch-y`——后者是内部切块方式，
     # 读者不需要知道，尺子①也禁。取不到就退成「第 N 段」，两者都不泄露内部编号。
     by_goal = {str(g.get("goal_id")): str(g.get("objective") or "")
@@ -346,19 +380,25 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
     for c in (chapters or []):
         if isinstance(c, Mapping) and str(c.get("goal_title") or "") not in goal_titles:
             goal_titles.append(str(c.get("goal_title") or ""))
+    rows: dict[str, list[str]] = {MISSING_HEADING: [], COLLECTED_HEADING: [],
+                                  PROCESS_HEADING: []}
     for index, item in enumerate(missing, 1):
         goal_id = str(item.get("goal_id") or "")
         chapter_id = str(item.get("chapter_id") or "")
         parent, _, section = chapter_id.partition("/")
         entry = by_chapter.get((goal_id, parent))
         reason = str(item.get("reason") or "").strip()
+        bucket = MISSING_HEADING
         if entry is not None:
             where = plain_words(_chapter_label(entry, section or None, goal_titles))
             yielded = int(entry.get("yielded") or 0)
             if yielded > 0:
+                bucket = COLLECTED_HEADING
                 # ⛔ 不写「采集章」：内部词，尺子①禁（程序生成的文本照样被抓）。
-                why = (f"采到 {yielded} 条，已入库并参与评级与统计；"
-                       + _YIELDED_TAIL.get(reason, _YIELDED_TAIL_DEFAULT))
+                why = f"采到 {yielded} 条，已入库并参与评级与统计；" + _yielded_tail(entry, reason)
+            elif str(entry.get("chapter_type") or "") != "collection":
+                bucket = PROCESS_HEADING
+                why = _PROCESS_REASON.get(reason, "原因未记录")
             else:
                 why = _MISSING_REASON.get(reason, "原因未记录")
         else:
@@ -368,8 +408,30 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
             text = plain_words(objective.strip())
             where = (text[:34] + "…") if len(text) > 34 else text
             why = _MISSING_REASON.get(reason, "原因未记录")
-        lines.append(f"| {where or f'第 {index} 段'} | {why} |")
-    return "\n".join(lines) + "\n"
+        rows[bucket].append(f"| {where or f'第 {index} 段'} | {why} |")
+    blocks = [_missing_block(heading, rows[heading])
+              for heading in (MISSING_HEADING, COLLECTED_HEADING, PROCESS_HEADING)
+              if rows[heading]]
+    return "\n".join(blocks)
+
+
+#: 三张表各自的开头：一句说明 + 表头。⛔ 后两张一个「采集」字都不许有。
+_MISSING_BLOCK_HEAD = {
+    MISSING_HEADING: ("（本节由程序按调研过程记录生成。）", "缺的是哪一段", "为什么缺"),
+    COLLECTED_HEADING: (
+        "（本节由程序按调研过程记录生成。这几段的内容**已经采到、已经入库**，"
+        "也参与了后面的评级与统计；缺的只是没把它单独写成正文里的一段。）",
+        "是哪一段", "采到了多少、缺的是什么"),
+    PROCESS_HEADING: (
+        "（本节由程序按调研过程记录生成。这几段不在采集范围内，"
+        "是拿已经采到的内容往下做的处理步骤。）", "是哪一个环节", "为什么没跑完"),
+}
+
+
+def _missing_block(heading: str, rows: Sequence[str]) -> str:
+    note, left, right = _MISSING_BLOCK_HEAD[heading]
+    return "\n".join([heading, "", note, "", f"| {left} | {right} |", "|---|---|",
+                      *rows]) + "\n"
 
 
 #: 交叉验证结论 → 人话。与 `build_prompt` 里给写手的那张同一套说法，⛔ 不出现 SINGLE/PASS
@@ -783,7 +845,7 @@ def _work_view(data: Mapping[str, Any], report_text: str) -> str:
                             chapters=data.get("chapters") or []) if view.get("missing") else ""
     body = "\n\n".join(str(s.get("markdown") or "") for s in view.get("sections") or [])
     return (f"### 工作稿标题\n{data.get('title')}\n\n### 工作稿的结论行（原样）\n{conclusions}\n\n"
-            f"### 哪些没采到（程序已写成人话，原样挂附录，你不必誊抄）\n{missing or '（无）'}\n\n"
+            f"### 缺口清单（程序已写成人话，原样挂附录，你不必誊抄）\n{missing or '（无）'}\n\n"
             f"### 工作稿正文全文\n{body}")
 
 
