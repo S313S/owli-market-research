@@ -283,13 +283,15 @@ def test_货3_题面问国内时海外平台与对照实体的源带旁证标_�
     assert "- S02｜B 级｜未登记｜豆包｜u2" in prompt
 
 
-def test_货3_把握度行去掉程序前缀并接正文实引数_引用池数只在与实引不同时写(tmp_path: Path) -> None:
+def test_货3_把握度行接正文实引数_引用池数只在与实引不同时写(tmp_path: Path) -> None:
+    """§RPT-8 货 2：前半截「主张 3 条：单源 3。」已挪进附录（本条锁的正是被替换的旧语义）；
+    后半截「正文实际引用证据 N 条（引用池共 M 条）」是 §RPT-4 C-11 的，一字不动。"""
     from app.report.polish.run import confidence_line
 
     tables = {"crossref_mix": {"n": 3, "rows": [{"交叉验证结论": "SINGLE", "主张数": 3}]}}
-    assert confidence_line(tables) == "主张 3 条：单源 3。"
+    assert confidence_line(tables) == ""
     assert confidence_line(tables, {"cited": 80, "正文实引": 28}) == \
-        "主张 3 条：单源 3。正文实际引用证据 28 条（引用池共 80 条）。"
+        "正文实际引用证据 28 条（引用池共 80 条）。"
 
 
 def test_货3_小节名与读者不明提示不再出现机器话() -> None:
@@ -443,6 +445,11 @@ def test_机器话在写作期就打回_原声引用块不查_尺子与闸同一
 
 
 # —— §D-072 货 4：主张行与态度行是同一条失灵路，跟着改同源 ——
+#
+# ⚠️ §RPT-8 货 2 把这一行的**内容**换了（内部计数「主张 N 条：单源 …」挪进附录，
+# 摘要这一行改成读者用得上的数）。下面几条锁的从来是**落点**——插在把握度段之后、
+# 不插进段落中间、缺席时接节末——落点一格没改，所以只把锚点换成新行的开头，
+# 断言逐条保留。⛔ 别把这几条删了：它们守的是 §D-072 那条失灵路。
 
 #: 带交叉验证读数，`confidence_line()` 才非空（货 3 那轮那份稿它返回空，
 #: 所以这条病象在货 3 的用例里显不出形——这正是它被漏掉的原因）。
@@ -450,6 +457,11 @@ _D072_CROSSREF = {**_D072_TABLES,
                   "crossref_mix": {"n": 9, "rows": [
                       {"交叉验证结论": "SINGLE", "主张数": 7},
                       {"交叉验证结论": "PASS", "主张数": 2}]}}
+
+
+#: 新行的开头（§RPT-8 货 2 之后）。这几份夹具没有已编码 UGC，`tiering_available`
+#: 判不出分层把握度，注入的就只剩这一句正文实引数——落点判定用它当锚点。
+_D072_ANCHOR = "正文实际引用证据"
 
 
 def _d072_lines_with_claims(tmp_path: Path, body: str) -> list[str]:
@@ -470,7 +482,7 @@ def test_D072_货4_主张行紧跟把握度段_普通段落形态也不跑位(tm
                                     "2. 【C】第二条发现[S02]。\n\n"
                                     "本报告结论的把握度为**低**，因为证据几乎都是 C 级。\n\n"
                                     "后文另起一段。\n")
-    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    claims = next(i for i, l in enumerate(lines) if l.startswith(_D072_ANCHOR))
     assert "把握度" in lines[claims - 1], "主张行没紧跟把握度段"
     assert lines[claims + 1].startswith("后文另起一段"), "主张行该在后文之前，不是节末"
     # 两行的先后不能乱：态度行贴发现列表，主张行贴把握度段。
@@ -486,7 +498,7 @@ def test_D072_货4_把握度写成多行普通段落_主张行不插进段落中
                                     "本报告结论的把握度为**低**，\n"
                                     "因为进入引用的证据几乎全部是 C 级社媒评论。\n\n"
                                     "后文另起一段。\n")
-    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    claims = next(i for i, l in enumerate(lines) if l.startswith(_D072_ANCHOR))
     # ⚠️ 把握度段后面必须还留着别的段，这条断言才分得出真假：段落若是节里最后一段，
     # 「插在段后」与老代码的「兜底接节末」会落在同一个位置，红不出来（本包实测踩过）。
     assert lines[claims - 1].startswith("因为进入引用的证据"), "主张行插进把握度段中间了"
@@ -501,7 +513,7 @@ def test_D072_货4_把握度是引用块_老形态行为不变(tmp_path: Path) -
                                     "> 本报告结论的把握度为**低**。\n"
                                     "> 证据几乎都是 C 级。\n\n"
                                     "后文另起一段。\n")
-    claims = next(i for i, l in enumerate(lines) if l.startswith("主张 9 条"))
+    claims = next(i for i, l in enumerate(lines) if l.startswith(_D072_ANCHOR))
     assert lines[claims - 1].startswith("> 证据几乎都是 C 级"), "引用块形态的落点变了"
     assert lines[claims + 1].startswith("后文另起一段")
 
@@ -511,5 +523,5 @@ def test_D072_货4_把握度缺席时主张行接节末_兜底与态度行同源
     lines = _d072_lines_with_claims(tmp_path, "摘要第一段。\n\n"
                                     "1. 【A】第一条发现[S01]。\n\n"
                                     "后文另起一段，与把握无关。\n")
-    assert lines[-1].startswith("主张 9 条"), "缺席形态该接节末"
+    assert lines[-1].startswith(_D072_ANCHOR), "缺席形态该接节末"
     assert not any("把握度" in l for l in lines)

@@ -757,6 +757,60 @@ def _audience(plan: Mapping[str, Any]) -> dict[str, str]:
             "audience_stake": str(stake or "").strip()}
 
 
+#: §RPT-8 货 4②：一条线索最多摘这么多字。主张原文通常 60–120 字，超长的是把
+#: 三件事写进了一句，截断比整条丢掉好——后面跟角标，读者点得进去看全文。
+CLUE_CHARS = 110
+#: 附录线索区最多放几条。真机 r-3b3482ca7f8b 的候选有 115 条，全放等于又一份清单、
+#: 没人读；8 条是「一页看得完」的量。⛔ 不按「谁重要」排（那是模型判断，本块不经模型），
+#: 按角标号升序，稳定可复现。
+CLUE_LIMIT = 8
+
+
+def _clues(claims: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]],
+           contrast_by_mark: Mapping[int, Any], platform_by_mark: Mapping[int, Any],
+           question: str) -> list[dict[str, Any]]:
+    """§RPT-8 货 4②：值得核的**单条**信号。
+
+    用户 09-18 读第三轮稿抓到的：库里躺着「Windows 端输入法落后」「每天打视频电话
+    要疯了」「用了俩礼拜一分钱没花」这类很具体的产品信号，**正文一条都没有**——
+    它们都是单源孤证，而关键发现只收撑得住的那几条，于是整批被筛没了。
+
+    筛法（四条，全都是既有读数，⛔ 不新造判断）：
+
+    1. `verdict == "SINGLE"`：正因为它是单源才进这里——这一节收的就是没被印证的信号；
+    2. `firsthand`：亲历者自己说的，转述与二手评论不进（`claims[].firsthand`）；
+    3. 证据进了引用池（有 `citation_no`）：没角标的写出来读者点不进去，等于让人信一句
+       没有出处的话，尺子③「角标不越池」也会判红；
+    4. 不是旁证（`offtopic_reason` 为空）：对照实体与海外平台的证据不进
+       ——§RPT-4 有意加的那道闸，本块照它办，⛔ 不绕过。
+
+    一个角标只留一条（同一条评论常被好几条主张各引一次），按角标号升序取前
+    `CLUE_LIMIT` 条：稳定、可复现、不经模型。
+    """
+    mark_of = {str(r["id"]): int(r["citation_no"]) for r in rows
+               if r.get("id") and r.get("citation_no") is not None}
+    best: dict[int, str] = {}
+    for claim in claims or []:
+        if str(claim.get("verdict") or "") != "SINGLE" or not claim.get("firsthand"):
+            continue
+        text = " ".join(str(claim.get("text") or "").split())
+        if not text:
+            continue
+        for evidence_id in claim.get("evidence_ids") or []:
+            mark = mark_of.get(str(evidence_id))
+            if mark is None:
+                continue
+            if offtopic_reason({"platform": platform_by_mark.get(mark)},
+                               contrast=contrast_by_mark.get(mark), question=question):
+                continue
+            # 同一角标留**最长**的那条：短的多半是「某平台有用户提到 X」的套话，
+            # 长的才带得出具体信号，而具体正是这一节的全部价值。
+            if len(text) > len(best.get(mark, "")):
+                best[mark] = text
+    return [{"mark": _mark(mark), "text": best[mark][:CLUE_CHARS]}
+            for mark in sorted(best)[:CLUE_LIMIT]]
+
+
 def build_tables(*, report: Mapping[str, Any], plan: Mapping[str, Any],
                  evidence: Sequence[Mapping[str, Any]], claims: Sequence[Mapping[str, Any]],
                  view: Mapping[str, Any]) -> dict[str, Any]:
@@ -868,6 +922,9 @@ def build_tables(*, report: Mapping[str, Any], plan: Mapping[str, Any],
         contrast_by_mark[int(r["citation_no"])] = (
             None if not entity else entity not in subject_names)
     return {
+        # §RPT-8 货 4②：单人线索。放在返回值里而不是算进某张表——它不是一张聚合表，
+        # 是几条**具体的单条信号**，程序照抄主张原文挂附录。
+        "clues": _clues(claims, rows, contrast_by_mark, platform_by_mark, question),
         "research_id": report.get("id"),
         "research_question": plan.get("research_question") or report.get("research_question"),
         "title": view.get("title") or report.get("title"),
