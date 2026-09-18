@@ -276,13 +276,19 @@ def test_片提示词告诉写手兄弟片看不见彼此():
 # ── 货 3：「真实无料」与「没采到」要分得开 ────────────────────────────────
 
 
-def _why(reason: str, yielded: int = 0) -> str:
-    """缺口清单里这一行的「为什么缺」。`yielded` = 这一段实际落库的条数。"""
+def _why(reason: str, yielded: int = 0, cited: int = 0) -> str:
+    """缺口清单里这一行的「为什么缺」。`yielded` = 这一段实际落库的条数。
+
+    §RPT-7 货 3 ①：`cited` 与 `yielded` 分开给。本包之前这里写的是 `cited=yielded`
+    ——顺手写的，不是本项目的事实（HN 那一章 7 条入库、只有 2 条进了引用池）。
+    而「正文未能引用它们」那一支现在按 `cited` 判，混在一起就量不出它。
+    有角标进正文的那一支由 `tests/test_rpt7_appendix_truth.py` 锁。
+    """
     from app.report.polish.run import missing_table
 
     chapters = [{"goal_id": "goal-1", "chapter_id": "ch-15", "chapter_type": "collection",
                  "goal_title": "口碑画像", "display_name": "d", "entity": "豆包",
-                 "platforms": ["Hacker News"], "yielded": yielded, "cited": yielded}]
+                 "platforms": ["Hacker News"], "yielded": yielded, "cited": cited}]
     table = missing_table([{"goal_id": "goal-1", "chapter_id": "ch-15", "reason": reason}],
                           [{"goal_id": "goal-1", "objective": "采 Product Hunt 上豆包的条目"}],
                           chapters=chapters)

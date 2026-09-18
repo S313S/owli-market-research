@@ -260,6 +260,57 @@ def plain_words(text: str) -> str:
     return re.sub(r"(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])", "", out)
 
 
+#: §RPT-7 货 3 ②：口径句是**两用**的——同一段字既进写手提示词（`build_prompt` 把
+#: `tables[*]` 除 name 外整块塞过去，那里它是规矩、一个字不能改），又原样印进
+#: 客户稿的「各表口径」（那里它是说明）。09-18 用户读到的是后者：
+#: 「⛔ 不得把它们写成多数人的看法」「不设它这一格四成条目会凭空消失」
+#: 「正文引它时出处行必须写「等级 C」」——是在客户面前对自己人下指令。
+#:
+#: ⇒ 只在**呈现层**改：改源等于拆掉写手的护栏（`tests/test_quote1_zero_engagement.py`
+#: 就锁着那句原文）。⛔ 逐句改写、不做通用改写——口径句里有真实复核数（30/28 那种），
+#: 一条机械正则扫过去迟早削到数字上。
+_CLIENT_VOICE = (
+    ("⛔ 不得把它们写成多数人的看法、也不得单独拎去当某一方的头号声音。",
+     "它们不代表多数人的看法，也不是某一方的头号声音。"),
+    ("只能说「提及…的条数」，不得说「X% 用户认为」。",
+     "这张表给的是「提及…的条数」，不是「X% 用户认为」。"),
+    ("正文引它时出处行必须写「等级 C」，读者据此把它当例子，不当依据。",
+     "正文引到这几条时，出处行会标出「等级 C」，读者据此把它当例子，不当依据。"),
+    ("不设它这一格四成条目会凭空消失。", "没有这一格，四成条目在表里就看不见了。"),
+)
+#: 内部版本号：客户不需要知道我们的词表/编码规则是第几版，留着只会让人追问「那 v1 呢」。
+#: ⛔ 只削版本尾巴，不动它前面的名字——「模型编码」「固定词表」本来就是读得懂的话，
+#: 换个说法反而是在编。⛔ 也绝不碰句子里的真实读数（30 条复核、28 条一致）。
+_VERSION_TAG = re.compile(
+    r"（v\d+(?:\.\d+)*）|(?<=[\u4e00-\u9fff])\s+v\d+(?:\.\d+)*(?![\d.])")
+#: 兜底：⛔ 是本项目给写手下禁令的记号，客户稿里一个都不该有。逐句改写漏掉的那些
+#: 整句删掉——它对客户没有信息量，留着只会让人看见我们内部怎么管的活。
+_ORDER_CLAUSE = re.compile(r"⛔[^。；]*[。；]?")
+
+
+def client_voice(text: str) -> str:
+    """口径句的**客户版**：给写手的指令改成陈述句，内部版本号削掉。
+
+    ⚠️ 只给附录渲染用。提示词那一头照旧读 `tables[*].basis` 原文，一个字不动。
+    """
+    out = str(text or "")
+    for order, statement in _CLIENT_VOICE:
+        out = out.replace(order, statement)
+    out = _ORDER_CLAUSE.sub("", _VERSION_TAG.sub("", out))
+    # 削掉版本尾巴会留下「固定词表 命中计数」这种中文之间的空格，按 `plain_words`
+    # 同一条规矩收掉——两处口径必须同形。
+    return re.sub(r"(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])", "", out)
+
+
+def basis_words(text: str) -> str:
+    """附录里印口径句的唯一一条路：机器词换人话，再把给写手的指令换成陈述句。
+
+    四处渲染 `basis`（各表口径 / 词表命中 / 代表原声 / 对照实体）共用它——
+    同一段字在一份稿里出现两种形态，是本项目现形过的假绿。
+    """
+    return client_voice(plain_words(text))
+
+
 #: 机器 reason → 人话。SKILL 第 7 条明写「用人话改写，不要照抄
 #: `goal-2/ch-3 empty_result` 这种」——既然是照着一张表改写，就没有理由让模型抄，
 #: 抄错了还要被尺子抓。表外的 reason 统一写「原因未记录」（不瞎猜也不泄露机器词）。
@@ -309,8 +360,17 @@ _YIELDED_TAIL_DEFAULT = "这一段没能记成完整的一段，但内容本身�
 
 
 def _yielded_tail(entry: Mapping[str, Any], reason: str) -> str:
-    """「采到 N 条…」后面那半句。"""
+    """「采到 N 条…」后面那半句。
+
+    §RPT-7 货 3 ①：`timeout` 那一支写死「正文未能引用它们」，而 `chapter_rows`
+    早就算好了 `cited`——**有角标真进了正文，这句就是假话**。09-18 真机 HN 那一章
+    `yielded=7 / cited=2`（S38 在正文被引），只因死因记的是 `tool_unavailable`
+    才侥幸没走到这一支。判据落在账本查得到的 `cited` 上，不落在死因上。
+    """
+    if int(entry.get("cited") or 0) > 0:
+        return _YIELDED_TAIL_DEFAULT
     return _YIELDED_TAIL.get(reason, _YIELDED_TAIL_DEFAULT)
+
 
 #: §RPT-7 货 1：**非采集章**的理由码人话。与 `_MISSING_REASON` 是两套，因为那一套
 #: 每一句都带「采集」——套到一条都不在采的章上（打标签、一致性检查、报告撰写），
@@ -652,7 +712,7 @@ def _inject_after_confidence(body: str, line: str) -> str:
 
 def basis_table(tables: Mapping[str, Any]) -> str:
     """各表口径。`basis` 是每张表自己带的字段，照列即可，不必让模型誊抄。"""
-    rows = [(plain_words(str(v.get("title") or k)), plain_words(str(v.get("basis") or "").strip()))
+    rows = [(plain_words(str(v.get("title") or k)), basis_words(str(v.get("basis") or "").strip()))
             for k, v in (tables or {}).items() if isinstance(v, Mapping)]
     if not rows:
         return ""
@@ -690,7 +750,7 @@ def lexicon_reference_table(tables: Mapping[str, Any]) -> str:
     for row in table.get("rows") or []:
         lines.append("| " + " | ".join(
             str(row.get(column, "")).replace("|", "｜") for column in columns) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -763,7 +823,7 @@ def contrast_reference_table(tables: Mapping[str, Any]) -> str:
     for row in table.get("rows") or []:
         marks = "".join(f"[{m}]" for m in (row.get("marks") or [])) or "—"
         lines.append("| " + " | ".join([*(_cell(row.get(c, "")) for c in columns), marks]) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -791,7 +851,7 @@ def quotes_reference_table(tables: Mapping[str, Any]) -> str:
         cells = [_cell(row.get(column, "")) for column in columns]
         marks = "".join(f"[{m}]" for m in (row.get("marks") or [])) or "—"
         lines.append("| " + " | ".join([*cells, marks]) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 

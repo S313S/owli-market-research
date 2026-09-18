@@ -78,3 +78,49 @@ AssertionError: '报告撰写（豆包与四款对手的横向对比与观点综
 不是把工序名甩给客户；那样量会把修好的写法也判红。
 
 **读数**：`pytest tests/` **2270 passed / 3 skipped / EXIT=0`（`var/rpt7/pytest-h2b.txt`）。
+
+## 货 3 · 两处假话闸
+
+**造红**（在货 2 的树上，`_yielded_tail` 与 `basis_table` 都还是 base 那一版）4 红：
+
+```
+assert '正文未能引用它们' not in
+  '| Hacker News（豆包） | 采到 7 条，已入库并参与评级与统计；这一段的总结超时没写成，正文未能引用它们 |'
+assert '⛔' not in '## 各表口径\n…C 级只作旁证，正文引它时出处行必须写「等级 C」…'
+assert ('v1' not in md and 'v2' not in md)
+assert '⛔' not in '## 代表原声（逐字摘录，按互动量排序）…'
+```
+
+### ① 有角标进了正文就不许写「正文未能引用它们」
+
+`_YIELDED_TAIL["timeout"]` 写死那半句，而 `chapter_rows` 早就算好了 `cited`。
+真机 HN 那一章 `yielded=7 / cited=2`（S38 在正文真被引），只因死因记的是
+`tool_unavailable` 才侥幸没走到这一支——**换个死因这句就是假话**。
+闸落在 `cited > 0` 上（账本查得到的事实），不落在死因上。`cited=0` 的那一支
+§D-060 的原话一个字没动。
+
+**既有用例**：`test_rpt6_length_and_hedging::_why` 的夹具写的是 `cited=yielded`
+——顺手写的，不是本项目的事实（HN 7 条入库、只有 2 条进池）。拆成两个参数，
+默认 `cited=0`，那条「措辞一字不改」的断言字面未动。
+`test_d060::test_new_wording_says_collected_but_timed_out` 的小红书那一行
+`cited=12`，按新语义走不认领死因的那句；Reddit（`cited=0`）逐字不变。
+
+### ② 「各表口径」不许把给写手的指令与内部版本号漏给客户
+
+口径句是**两用**的：同一段字既进写手提示词（`build_prompt` 把 `tables[*]`
+除 `name` 外整块塞过去，那里它是护栏），又原样印进客户稿的「各表口径」。
+⇒ **只在呈现层改**，`tables[*].basis` 一个字不动
+（`test_quote1_zero_engagement.py:66` 正锁着那句原文，改源等于拆写手的护栏；
+本包另加一条用例锁「源没被改」）。
+
+改法：`client_voice()` 逐句把指令改成陈述句 + 削内部版本尾巴 + 兜底删 ⛔ 残句；
+`basis_words() = client_voice(plain_words())` 成为附录印口径句的唯一一条路。
+⛔ 逐句改写、不做通用改写——口径句里有真实复核数（30/28），机械正则迟早削到数字上。
+真机渲染后 `⛔ / v1 / v2` 全消失，`另抽 30 条复核、28 条与模型判读一致` 逐字还在。
+
+**自补（非提货单点名）**：同一段口径句在附录里出现两处——「各表口径」表和
+「代表原声 / 词表命中 / 对照实体」三张表的表尾。提货单只点了前者；
+但那是**同一段字**，只改一处会出现「同一句话在一份稿里两种形态」，
+是本项目现形过的假绿。四处共用 `basis_words`，一处改全处改。
+
+**读数**：`pytest tests/` **2276 passed / 3 skipped / EXIT=0**（`var/rpt7/pytest-h3b.txt`）。

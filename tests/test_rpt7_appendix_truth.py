@@ -204,3 +204,85 @@ def test_comparison_chapter_reads_as_a_report_section_not_a_step():
              "goal_title": "豆包与四款对手的横向对比与观点综合", "platforms": [], "entity": ""}
     assert _chapter_label(entry, "sec-1", ["豆包的口碑画像"]) == (
         "「豆包与四款对手的横向对比与观点综合」的报告·第 1 节（豆包的口碑画像）")
+
+
+# ── 货 3 ① ：有角标进了正文就不许写「正文未能引用它们」 ────────────────────
+def test_timeout_tail_stops_claiming_uncited_when_the_body_did_cite_them():
+    """HN 那一章 `cited=2`（S38 在正文真被引）。
+
+    `_YIELDED_TAIL["timeout"]` 写死「正文未能引用它们」，而 `chapter_rows` 早就
+    算好了 `cited`——本稿走 `tool_unavailable` 分支侥幸没撞上，换个死因就是假话。
+    """
+    timeout_hn = [{"goal_id": "goal-1", "chapter_id": "ch-13", "reason": "timeout"}]
+    md = missing_table(timeout_hn, OBJECTIVES, chapters=_chapters())
+    assert "正文未能引用它们" not in md, md
+    assert "采到 7 条，已入库并参与评级与统计；" in md, md
+
+
+def test_timeout_tail_keeps_the_old_wording_when_nothing_was_cited():
+    """一条角标都没进正文：§D-060 那句真机验过的措辞一个字不动。"""
+    rows = [{"agent_name": "hn-collect", "goal_id": "goal-1", "platform": "hn",
+             "citation_no": None} for _ in range(7)]
+    md = missing_table([{"goal_id": "goal-1", "chapter_id": "ch-13", "reason": "timeout"}],
+                       OBJECTIVES, chapters=chapter_rows(PLAN, rows))
+    assert "这一段的总结超时没写成，正文未能引用它们" in md, md
+
+
+# ── 货 3 ② ：「各表口径」不许把给写手的指令与内部版本号漏给客户 ──────────────
+#: 逐字取自已交用户那份稿的 tables.json（r-3b3482ca7f8b）。
+REAL_BASIS = {
+    "topic_polarity": {
+        "title": "主题提及量与极性词命中（Top 8）",
+        "basis": "固定词表 v1 命中计数，不是情感判断；只能说「提及…的条数」，"
+                 "不得说「X% 用户认为」。所用词表随报告版本固定，不随单次调研调整。"},
+    "attitude_by_topic": {
+        "title": "UGC 逐条编码：主题 × 态度条数",
+        "basis": "对 90 条已编码的 UGC逐条模型编码后计数（模型编码（v2），另抽 30 条复核、"
+                 "28 条与模型判读一致；表内均为条数，不是全网比例。）。"
+                 "没命中任何主题的归入「未归主题」，不设它这一格四成条目会凭空消失。"},
+    "quotes": {
+        "title": "UGC 代表原声（每格按互动量取前 3）",
+        "basis": "「代表性」栏标了「无人点赞或评论」的那几条是这一格里没有更好的了才收的，"
+                 "⛔ 不得把它们写成多数人的看法、也不得单独拎去当某一方的头号声音。"
+                 "本轮原声含 C 级 2 条（「等级」栏标出）——C 级只作旁证，"
+                 "正文引它时出处行必须写「等级 C」，读者据此把它当例子，不当依据。"},
+}
+
+
+def test_basis_table_drops_the_orders_aimed_at_the_writer():
+    from app.report.polish.run import basis_table
+
+    md = basis_table(REAL_BASIS)
+    assert "⛔" not in md, md
+    assert "不得把它们写成" not in md and "不得说「X% 用户认为」" not in md, md
+    assert "不设它这一格" not in md and "必须写「等级 C」" not in md, md
+
+
+def test_basis_table_drops_internal_version_tags_but_not_the_real_recheck_numbers():
+    from app.report.polish.run import basis_table
+
+    md = basis_table(REAL_BASIS)
+    assert "v1" not in md and "v2" not in md, md
+    # ⛔ 复核读数是真数，一个都不许动（§D-072 的原话）。
+    assert "另抽 30 条复核、28 条与模型判读一致" in md, md
+    assert "固定词表命中计数" in md and "模型编码，另抽" in md, md
+
+
+def test_the_writer_facing_basis_is_left_alone():
+    """同一段字进提示词时是写手的护栏（`build_prompt` 整块塞过去），⛔ 不许改源。"""
+    from app.report.polish.run import basis_table
+
+    before = REAL_BASIS["quotes"]["basis"]
+    basis_table(REAL_BASIS)
+    assert REAL_BASIS["quotes"]["basis"] == before
+    assert "⛔ 不得把它们写成多数人的看法" in before
+
+
+def test_quotes_tail_gets_the_same_scrub_as_the_basis_table():
+    """同一段口径句在附录里出现两处（口径表 + 原声表表尾），两处必须同形。"""
+    from app.report.polish.run import quotes_reference_table
+
+    table = dict(REAL_BASIS["quotes"], columns=["主题"], n=1,
+                 rows=[{"主题": "功能与能力", "marks": [96]}])
+    md = quotes_reference_table({"quotes": table})
+    assert "⛔" not in md and "必须写「等级 C」" not in md, md
