@@ -153,3 +153,54 @@ def test_unknown_chapter_still_falls_back_to_the_not_collected_table():
 def test_no_internal_words_in_any_of_the_three_blocks():
     md = missing_table(MISSING, OBJECTIVES, chapters=_chapters())
     assert _forbidden_hits(md) == [], _forbidden_hits(md)
+
+
+# ── 货 2：章型标签 ──────────────────────────────────────────────────────────
+def test_process_rows_never_print_the_internal_step_name():
+    """「标签」「一致性检查」是本项目内部的工序名，客户读不懂也不该看见。
+
+    量的是**第一格的字面**：`display_name` 原样漏出去就是「标签（Kimi…）」
+    「一致性检查（豆包…）」这两种形状。⛔ 不量整段是否出现「标签」二字——
+    「给采到的内容打主题标签」是说这一步在干什么，不是把工序名甩给客户。
+    """
+    md = missing_table(MISSING, OBJECTIVES, chapters=_chapters())
+    cells = [row.split("|")[1].strip()
+             for rows in _blocks(md).values() for row in rows]
+    assert cells and not [c for c in cells if c.startswith(("标签（", "一致性检查"))], cells
+
+
+def test_every_chapter_type_in_the_closed_set_gets_a_client_label():
+    """章型是闭集，逐个过一遍：谁都不许把 `display_name` 原样漏出去。"""
+    from app.plan.chapters import CHAPTER_TYPES
+    from app.report.polish.run import _chapter_label
+
+    leaked = []
+    for kind in sorted(CHAPTER_TYPES):
+        if kind == "collection":
+            continue        # 采集章走渠道（实体），另有用例锁
+        entry = {"chapter_type": kind, "display_name": "一致性检查",
+                 "goal_title": "豆包在国内用户与媒体中的口碑画像", "platforms": [], "entity": ""}
+        if "一致性检查" in _chapter_label(entry, None, []):
+            leaked.append(kind)
+    assert leaked == [], leaked
+
+
+def test_an_unknown_chapter_type_still_does_not_leak_the_internal_name():
+    """章型缺失/越出闭集：退成中性说法，⛔ 不退回 `display_name`，也不编含义。"""
+    from app.report.polish.run import _chapter_label
+
+    entry = {"chapter_type": "", "display_name": "标签",
+             "goal_title": "Kimi 在国内用户与媒体中的口碑画像", "platforms": [], "entity": ""}
+    label = _chapter_label(entry, None, [])
+    assert "标签" not in label and label.startswith("中间处理步骤"), label
+
+
+def test_comparison_chapter_reads_as_a_report_section_not_a_step():
+    """goal-6 的横向对比章 `chapter_type=comparison`、`display_name=报告撰写`——
+    它是撰写章，按报告那一支写，不该被当成一道内部处理步骤。"""
+    from app.report.polish.run import _chapter_label
+
+    entry = {"chapter_type": "comparison", "display_name": "报告撰写",
+             "goal_title": "豆包与四款对手的横向对比与观点综合", "platforms": [], "entity": ""}
+    assert _chapter_label(entry, "sec-1", ["豆包的口碑画像"]) == (
+        "「豆包与四款对手的横向对比与观点综合」的报告·第 1 节（豆包的口碑画像）")

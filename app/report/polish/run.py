@@ -327,22 +327,55 @@ _PROCESS_REASON = {
 }
 
 
+#: §RPT-7 货 2：章型（`app/plan/chapters.py:CHAPTER_TYPES` 的 11 项闭集）→ 客户读得懂的说法。
+#:
+#: 09-18 真机：`_chapter_label` 只认 `collection` / `report`，其余一律落
+#: `display_name` 兜底，于是「标签」「一致性检查」——本项目内部的工序名——
+#: 原样印进了给客户的附录。客户读不懂，读懂了也只会看见我们内部怎么排的活。
+#:
+#: ⛔ 这里只按**章型本身的字面含义**说一句，不编库里没有的工序含义：
+#: - `tagging` 的任务原文是「对清洗后的语料按主题维度打标签」（真机 goal-2/ch-4）；
+#: - `audit` 两种活都挂在它名下（`可靠度审计` 给证据评级、`一致性检查` 查同源矛盾），
+#:   所以只能写两者都成立的那句「证据的质量核查」，⛔ 不许挑一种写死；
+#: - `transport` 在 `_KIND_CHAPTER_TYPES` 里根本没有产出方（闭集成员但排不出来），
+#:   编不出它干什么，就让它走兜底，⛔ 不猜。
+_CHAPTER_TYPE_LABEL = {
+    "data_cleaning": "采到的内容的清洗整理",
+    "tagging": "给采到的内容打主题标签",
+    "audit": "证据的质量核查",
+    "cross_validation": "结论的多源交叉核对",
+    "summary": "阶段小结",
+    "excel_generation": "导出成表格文件",
+    "code_execution": "按脚本跑的数据处理",
+}
+#: 认不出章型（闭集外、或产物里这一格是空的）时的说法。⛔ 不退回 `display_name`：
+#: 那正是内部工序名漏出去的那条路。中性但不撒谎——它确实是中间的一道处理。
+_CHAPTER_TYPE_FALLBACK = "中间处理步骤"
+#: 撰写章：`report` 之外，`comparison` 也是（真机 goal-6/ch-4 的 `display_name` 就是
+#: 「报告撰写」，章型记的却是 comparison）。两者都按「报告·第 N 节」写，不是处理步骤。
+_REPORT_KINDS = frozenset({"report", "comparison"})
+
+
 def _chapter_label(entry: Mapping[str, Any], section: str | None,
                    goal_titles: Sequence[str]) -> str:
-    """「缺的是哪一段」：缺的单位是单源子章，不是整个目标——写「渠道（实体）」。"""
+    """「缺的是哪一段」：缺的单位是单源子章，不是整个目标——写「渠道（实体）」。
+
+    §RPT-7 货 2：非采集、非撰写的章按 `chapter_type` 取客户说法，
+    ⛔ 不按章名猜、也不再拿 `display_name` 兜底（内部工序名就是从那儿漏出去的）。
+    """
     platforms = "、".join(str(x) for x in (entry.get("platforms") or []) if x)
     entity = str(entry.get("entity") or "").strip()
     goal_title = str(entry.get("goal_title") or "").strip()
     kind = str(entry.get("chapter_type") or "")
     if kind == "collection" and platforms:
         return f"{platforms}（{entity}）" if entity else platforms
-    if kind == "report":
+    if kind in _REPORT_KINDS:
         head = f"「{goal_title}」的报告" if goal_title else "报告"
         number = section.removeprefix("sec-") if section else ""
         if number.isdigit() and 0 < int(number) <= len(goal_titles):
             return f"{head}·第 {number} 节（{goal_titles[int(number) - 1]}）"
         return head
-    name = str(entry.get("display_name") or "").strip() or "这一段"
+    name = _CHAPTER_TYPE_LABEL.get(kind, _CHAPTER_TYPE_FALLBACK)
     return f"{name}（{goal_title}）" if goal_title else name
 
 
