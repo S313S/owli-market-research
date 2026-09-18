@@ -573,6 +573,16 @@ ATTITUDE_HINTS = {"负": ("负向", "负面", "吐槽", "抱怨", "差评"),
                   "正": ("正向", "正面", "好评", "夸")}
 CELL_MARK_COVERAGE = 1 / 3
 CODED_CELL_TABLE = "attitude_by_topic"
+#: §D-084：「不再只是 X，而是 Y」里的 X 是被否定掉的那一半，句子并没有在讲 X。
+#: 真机第三轮咨询体第 35 行「衡量它的不再只是回答质量或模型强弱，而是能否接住一项
+#: 完整工作」——整段讲的是媒体定位表，一个字都没解释「回答质量」这一格的编码语义，
+#: 判据却只看见「而是」+ 主题名同时出现就判红（与 §D-083「顺口提一句被当成结构
+#: 信号」同族）。跨度从否定词起、到 `而是 / 而非 / 而在于` 或分句逗号止：**右半句
+#: 才是这句真正主张的那一半**，它里面的主题名照旧要管。
+NEGATED_HALF = re.compile(
+    r"(?:不再只是|不再仅仅是|不再仅是|不再是|不只是|不仅仅是|不仅是|"
+    r"并非只是|并非|并不是|不是)"
+    r"(?:(?!而是|而非|而在于)[^，,])*")
 
 
 def _coded_cells(tables: Mapping[str, Any]) -> dict[tuple[str, str], tuple[int, set[int]]]:
@@ -605,6 +615,28 @@ def check_cell_attribution(markdown: str, tables: Mapping[str, Any]) -> list[str
     return problems
 
 
+def _topic_only_in_negated_half(sentence: str, topic: str) -> bool:
+    """主题名**只**出现在被否定掉的那半句里（两边都出现的，照旧要管）。
+
+    抠掉被否定的那几段后主题名就不见了，说明这句话没在主张关于它的任何事。
+    替换成全角空格而不是删掉，免得抠完把两截拼出一个原本不存在的主题名。
+    """
+    return topic not in NEGATED_HALF.sub("　", sentence)
+
+
+def _sentence_pins_the_cell(sentence: str, count: int, wanted: set[str],
+                            used: set[int], marks: set[int]) -> bool:
+    """句子是不是仍然明摆着在谈这一格：写了正/负向、引了这一格自己的角标、或念出条数。
+
+    ⛔ 这**不是**「有角标就放行」——恰恰相反：带上这一格的角标会让上面那条豁免失效。
+    有这三样之一，就算主题名落在否定句里也照旧判——否则写手换一句「说的并非 X 太贵，
+    而是……」就能绕过去，09-07 那个病象会原样复活。
+    """
+    if wanted or (used & marks):
+        return True
+    return count in {int(n) for n in re.findall(r"\d+", sentence)}
+
+
 def _cell_attribution_problems(sentence: str, cells: dict[tuple[str, str], tuple[int, set[int]]],
                                used: set[int], index: int) -> list[str]:
     problems = []
@@ -617,6 +649,11 @@ def _cell_attribution_problems(sentence: str, cells: dict[tuple[str, str], tuple
         count = sum(c for c, _ in picked)
         marks = {m for _, ms in picked for m in ms}
         if not count:
+            continue
+        # §D-084：主题名整个落在被否定的那半句里，且句子再没有一处指向这一格——
+        # 这不是在给这一格归因，是顺口提了一句它的名字。
+        if (_topic_only_in_negated_half(sentence, topic)
+                and not _sentence_pins_the_cell(sentence, count, wanted, used, marks)):
             continue
         if not marks or len(marks) < count * CELL_MARK_COVERAGE:
             problems.append(
