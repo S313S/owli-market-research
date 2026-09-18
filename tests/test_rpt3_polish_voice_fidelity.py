@@ -107,11 +107,16 @@ def test_组装时按写手各节实引裁清单_附录原声表的角标不算(
 
 # ── 货 4 ────────────────────────────────────────────────────────────────────
 
-def test_摘要把握度句后注入主张计数_三数之和等于n(tmp_path: Path) -> None:
+def test_摘要把握度句后那一行不再是内部计数_落点不变(tmp_path: Path) -> None:
+    """§RPT-8 货 2：这一行原来是「主张 310 条：单源 255 / …」。
+
+    ⚠️ 本条锁的正是**被替换掉的旧语义**：那串数是内部计数，客户第一眼读到「单源 255」
+    只会更慌，而它回答不了「这几条发现我能信几分」。数一个字没改，整段挪进附录
+    （见 `test_把握度两张表挂附录且算作程序块`）。**落点一格没动**，下面照旧断言。
+    """
     line = confidence_line(TABLES)
-    # §RPT-4 C-11：「（程序按交叉验证结论计数）」前缀是机器话，已去掉（本条锁的正是被替换的旧语义）。
-    assert line == "主张 310 条：单源 255 / 偏弱 34 / 多源互证 21。"
-    assert 255 + 34 + 21 == TABLES["crossref_mix"]["n"]
+    assert "主张 310 条" not in line, "内部计数不许再出现在摘要这一行"
+    assert line == "", "没有正文实引数、也判不出分层把握度时，这一行整行不出"
     summary = tmp_path / "a.md"
     summary.write_text("1. 发现一[S02]\n\n> 本报告结论的把握度为**低**，主要因为……\n\n收尾句。\n",
                        encoding="utf-8")
@@ -120,8 +125,9 @@ def test_摘要把握度句后注入主张计数_三数之和等于n(tmp_path: P
     md = assemble([("执行摘要", summary), ("附录", appendix)], POOL, tables=TABLES)
     lines = md.splitlines()
     at = next(i for i, text in enumerate(lines) if "把握度为" in text)
-    # §RPT-4 C-11：组装时再接一句正文实引条数（这里正文只引了 S02 一条）。
-    assert lines[at + 2] == line + "正文实际引用证据 1 条。" and "收尾句" in lines[at + 4]
+    # §RPT-4 C-11：组装时接一句正文实引条数（这里正文只引了 S02 一条）。
+    assert lines[at + 2] == "正文实际引用证据 1 条。" and "收尾句" in lines[at + 4]
+    assert "主张 310 条" not in md.split("# 附录")[0], "内部计数不许留在开篇节"
     for word in ("SINGLE", "PASS", "WEAK"):
         assert word not in md.split("# 附录")[0], "开篇节不许出现内部口径词（尺子⑦）"
 
@@ -132,6 +138,9 @@ def test_把握度两张表挂附录且算作程序块() -> None:
     assert "| 单源 | 255 | 82.3% |" in block and "| 多源互证 | 21 | 6.8% |" in block
     assert "| A | 16 | 17 |" in block and "| 未评级 | 0 | 374 |" in block
     assert "SINGLE" not in block and "reports.extra" not in block
+    # §RPT-8 货 2：从摘要挪下来的那串数**落在这里**，真实数字一个没改，
+    # 并配一句人话说清它为什么天生偏大（否则读者把采写形态读成结论不可信）。
+    assert "主张共 310 条。" in block and "不等于结论都不可信" in block
     assert confidence_tables({}) == "" and confidence_line({}) == ""
 
 

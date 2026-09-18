@@ -133,10 +133,15 @@ LEXICON_HEADING = "## 词表命中参考（只数触发词，不是情感判断�
 QUOTES_HEADING = "## 代表原声（逐字摘录，按互动量排序）"
 CONTRAST_HEADING = "## 对照实体的评论（只作参照，不计入正文态度表）"
 TIMESPAN_HEADING = "## 证据的时间范围"
+#: §RPT-8 货 4②：单人线索区。⛔ 标题里就把「没被印证」写死——这一节最大的风险
+#: 是读者把它当成结论读，防这件事只能靠标题，不能指望读者读完小字。
+CLUES_HEADING = "## 值得核的线索（各只有一条信号，未经交叉验证，不是结论）"
+#: ⚠️ §RPT-7（缺口三表）与 §RPT-8（线索表）各自往这张表里加过条目，合并时**两边都要在**：
+#: 它是「剜掉哪些程序块再量写手篇幅」的唯一答案，漏一个会静默改掉篇幅判据的判域。
 PROGRAM_APPENDIX_HEADINGS = (MISSING_HEADING, COLLECTED_HEADING, PROCESS_HEADING,
                              BASIS_HEADING, LEXICON_HEADING,
                              QUOTES_HEADING, SOURCES_HEADING, CONFIDENCE_HEADING,
-                             CONTRAST_HEADING, TIMESPAN_HEADING)
+                             CONTRAST_HEADING, TIMESPAN_HEADING, CLUES_HEADING)
 
 
 def sources_table(sources: Sequence[Mapping[str, Any]],
@@ -533,6 +538,26 @@ _CROSSREF_WORDS = {"SINGLE": "单源", "WEAK": "偏弱", "PASS": "多源互证",
 _CROSSREF_ORDER = ("SINGLE", "WEAK", "PASS", "CONFLICT")
 
 
+#: §RPT-8 货 1：把握度的三档，强 → 弱。⛔ 不加第四档：读者要的是「能信几分」，
+#: 四档以上他分不出差别，程序也判不出稳定的界。
+CONFIDENCE_TIERS = ("高", "中", "低")
+#: 编码表里一格有多少条才算「有量撑着」。10 条是这样定的：本形态的编码样本
+#: 量级在 90 条上下（真机 r-3b3482ca7f8b），一格 10 条 ≈ 全样本的一成——
+#: 低于这个数，那一格本身就只是几个人的说法，撑不起「高」。
+#: ⛔ 这个数改了会改全部历史稿的档位，改之前先拿真稿两侧读数对一遍。
+CODED_STRONG = 10
+#: 交叉验证结论里唯一算「真有别人印证过」的那一个。
+#: ⚠️ 每条角标的 `crossref` 是「引用它的那些主张里**最强**的那个结论」
+#: （`tables._crossref_by_mark`），真机 79 条里 37 条是它 —— 所以它**只能当必要条件**，
+#: 单独拿它判「高」会把一半的发现判成高。三个读数一起看才判得住。
+_CROSSREF_CORROBORATED = "PASS"
+#: 等级里「撑得住结论」的那两档（C 级共用规则写死只作旁证）。
+_STRONG_GRADES = ("A", "B")
+#: 主题表里的兜底格（`coding.TOPIC_NONE`）。不 import：那是禁区外的模块但属另一层，
+#: 值变了这里的判定只会少算一格（更保守），不会静默判高。
+_CODED_CATCHALL_TOPIC = "未归主题"
+
+
 def _crossref_counts(tables: Mapping[str, Any]) -> tuple[int, list[tuple[str, int]]]:
     table = (tables or {}).get("crossref_mix")
     if not isinstance(table, Mapping):
@@ -543,18 +568,199 @@ def _crossref_counts(tables: Mapping[str, Any]) -> tuple[int, list[tuple[str, in
     return int(table.get("n") or 0), [(k, counts[k]) for k in order if counts.get(k)]
 
 
-def confidence_line(tables: Mapping[str, Any], counts: Mapping[str, Any] | None = None) -> str:
+#: 角标号，**带不带方括号都认**。⚠️ 与 `_MARK`（只认 `[S01]`）分开是有意的：
+#: 本包要读的两头写法不一样——`Finding.marks` 与表里的 `marks` 是裸的 `S01`，
+#: 正文里是 `[S01]`。第一版只用了 `_MARK`，于是逐条把握度全判成「没带角标」、
+#: 四条齐刷刷判低，读数看着像「规则没生效」其实是尺子自己读不到（先怀疑尺子）。
+_MARK_ANY = re.compile(r"\[?S(\d{2,})\]?")
+
+
+def _mark_numbers(values: Any) -> list[int]:
+    """一段文字、或一串角标里出现过的角标号，升序去重。"""
+    if not isinstance(values, str):
+        values = " ".join(str(v) for v in values or [])
+    return sorted({int(n) for n in _MARK_ANY.findall(values)})
+
+
+def _sources_by_mark(sources: Sequence[Mapping[str, Any]]) -> dict[int, Mapping[str, Any]]:
+    return {int(str(s["mark"])[1:]): s for s in sources or [] if s.get("mark")}
+
+
+def _thread_groups(numbers: Sequence[int],
+                   by_mark: Mapping[int, Mapping[str, Any]]) -> int:
+    """这批角标其实来自几个**互相独立**的出处。
+
+    同一个帖子下的两条评论不是两个来源——真机 r-3b3482ca7f8b 的第 4 条关键发现
+    正是 [S17][S21]，同一条小红书帖下的两条评论，写成了「用户的负向声音落在……」。
+    `sources[].same_thread`（`tables.thread_key` 算的）就是为这件事准备的读数。
+    """
+    seen: set[int] = set()
+    groups = 0
+    for number in numbers:
+        if number in seen:
+            continue
+        groups += 1
+        seen.add(number)
+        for sibling in (by_mark.get(number) or {}).get("same_thread") or []:
+            found = re.fullmatch(r"S(\d{2,})", str(sibling))
+            if found:
+                seen.add(int(found.group(1)))
+    return groups
+
+
+def _coded_support(numbers: Sequence[int], tables: Mapping[str, Any]) -> tuple[int, str]:
+    """这批角标落在编码表的哪一格上、那一格有多少条。返回 (条数, 那一格的名字)。
+
+    只认「UGC 逐条编码：主题 × 态度」这**一张**：它的一行 = 一个「谁在哪个主题上
+    夸还是骂」的格子，`条数` 是逐条读完判的，`marks` 是这一格里**进了引用池**的那些
+    （`coding._row_marks`）。一条发现讲的就是这样一格，量就该按这一格数。
+
+    ⛔ 不并入另外两张，各有各的走样，两次实测都抬高了档位：
+    - `scenario_counts` 只答「在哪谈」不答「夸还是骂」，一格动辄 44 条——第 4 条
+      只有同帖两条评论，被「生活娱乐 44 条」抬起来；
+    - `scenario_attitude` 的「其他」是兜底桶，第 2 条（付费）被桶里 15 条抬成「高」，
+      而它在主题表里的正主是「价格与付费·中」5 条。
+    兜底格（`未归主题`）同理跳过：它是「没命中任何主题」的那一堆，不是一个主题。
+    词表命中表（`topic_polarity`）更不算——它只数触发词，不是态度判断，
+    共用规则 §6.5.3 也不许拿它的数进正文。
+    """
+    best, where = 0, ""
+    wanted = set(numbers)
+    table = (tables or {}).get("attitude_by_topic")
+    if not isinstance(table, Mapping):
+        return best, where
+    for row in table.get("rows") or []:
+        if not isinstance(row, Mapping) or str(row.get("主题")) == _CODED_CATCHALL_TOPIC:
+            continue
+        if not wanted & set(_mark_numbers(row.get("marks"))):
+            continue
+        count = int(row.get("条数") or 0)
+        if count > best:
+            best, where = count, f"{row.get('主题')}·{row.get('态度')}"
+    return best, where
+
+
+def finding_confidence(marks: Sequence[str], sources: Sequence[Mapping[str, Any]],
+                       tables: Mapping[str, Any]) -> tuple[str, str]:
+    """§RPT-8 货 1：**一条**关键发现的把握度 + 一句人话依据。
+
+    用户 09-18 读第三轮稿：「报告开头就写把握度低，目标客户看了会怎么想」。查下来
+    那一句几乎必然是「低」——判它的规则只看「多数说法是不是单源」，而本形态语料里
+    1358 条主张有 954 条**结构上**就只挂一条证据（主张文本形如「小红书有用户反馈 X」），
+    于是整篇一刀切判低，连有 90 条编码评论撑着的那条发现也被一起劝退。
+
+    改法：把握度**按条算**，读数只用三样，全都在 `tables.json` 里真的存在
+    （提货单判据 4；取不到的读数本项目吃过多次亏）：
+
+    - 每条角标的**等级**（`sources[].grade`，A/B/C/D）；
+    - 每条角标的**交叉验证结论**（`sources[].crossref`）与它的**出处独立性**
+      （`sources[].same_thread`、`sources[].platform`）；
+    - 这条发现落在编码表哪一格、那一格有多少条（`tables.attitude_by_topic` 等的 `条数`）。
+
+    三档的界：
+
+    - **高**：≥2 个独立出处、≥2 个平台、最强等级 A/B、有多源互证，且编码表那一格
+      ≥ `CODED_STRONG` 条。五条全中才算高——⛔ 少一条就不是高，这是有意写死的：
+      真机四条发现按这把尺子是 高1/中2/低1，与用户自己读出来的强弱次序一致。
+    - **中**：≥2 个独立出处、最强等级 A/B，且「多平台」与「有量撑着」至少占一样。
+    - **低**：其余（单出处、或最强只有 C 级、或既没跨平台也没量）。
+
+    ⛔ 不许把「低」直接改成「中」了事（提货单原话）：这里改的是**判法**，
+    判出来还是低的那条就该是低——真机第 4 条（同一帖下两条评论）判的仍是低。
+    """
+    numbers = _mark_numbers(marks)
+    by_mark = _sources_by_mark(sources)
+    rows = [by_mark[n] for n in numbers if n in by_mark]
+    if not rows:
+        return CONFIDENCE_TIERS[-1], "这条发现没带角标，判不了把握度"
+    grades = [str(r.get("grade") or "") for r in rows]
+    best_grade = next((g for g in _STRONG_GRADES if g in grades), grades and "C" or "")
+    strong_grade = best_grade in _STRONG_GRADES
+    corroborated = any(str(r.get("crossref") or "") == _CROSSREF_CORROBORATED for r in rows)
+    threads = _thread_groups(numbers, by_mark)
+    platforms = len({str(r.get("platform") or "") for r in rows if r.get("platform")})
+    coded, where = _coded_support(numbers, tables)
+    enough = coded >= CODED_STRONG
+    if threads >= 2 and platforms >= 2 and strong_grade and corroborated and enough:
+        tier = CONFIDENCE_TIERS[0]
+    elif threads >= 2 and strong_grade and (platforms >= 2 or enough):
+        tier = CONFIDENCE_TIERS[1]
+    else:
+        tier = CONFIDENCE_TIERS[-1]
+    parts = [f"{threads} 个独立出处", f"{platforms} 个平台",
+             f"最强等级 {best_grade or '未评级'}"]
+    parts.append("有别的来源印证" if corroborated else "没有别的来源印证")
+    parts.append(f"「{where}」那一格 {coded} 条评论撑着" if coded else "没有成规模的评论撑着")
+    return tier, "、".join(parts)
+
+
+def tiering_available(sources: Sequence[Mapping[str, Any]],
+                      tables: Mapping[str, Any]) -> bool:
+    """这一轮的读数够不够判分层把握度。**不够就一条都不判**，显示与门禁一起退场。
+
+    三条腿里「编码表那一格有多少条」是本包新加进来的那一条，也正是提货单说旧规则
+    「完全不看」的那一条（§一.1）。它不在场时，判出来的还是只看单源/等级的老口径，
+    摆出来只会让每条发现齐刷刷显示「低」——那是本包要治的病，不是本包该产出的东西。
+
+    ⛔ 不做「缺了就按两条腿判」的兜底：本项目的教训是**读数不全时别判**
+    （判不了就写判不了），假装判得出来会静默地把结论说歪。
+    没有已编码 UGC 的那些稿（纯媒体材料的竞品矩阵等）因此行为一字不变。
+    """
+    if not sources:
+        return False
+    table = (tables or {}).get("attitude_by_topic")
+    return isinstance(table, Mapping) and bool(table.get("rows"))
+
+
+def finding_confidences(findings: Sequence[Finding], sources: Sequence[Mapping[str, Any]],
+                        tables: Mapping[str, Any]) -> list[tuple[int, str, str]]:
+    """逐条关键发现的 (条号, 把握度, 依据)。摘要那一行与附录那张表读的是同一个它。
+
+    读数不全（`tiering_available` 为假）就返回空表——调用方据此整块不出，
+    ⛔ 不出一张全是「低」的表。
+    """
+    if not tiering_available(sources, tables):
+        return []
+    return [(f.index, *finding_confidence(f.marks, sources, tables)) for f in findings or []]
+
+
+def overall_confidence(tiers: Sequence[str]) -> str:
+    """整篇那一句总括怎么由各条汇总：**取中位档，条数为偶数时取偏低的那一个**。
+
+    ⛔ 不取最低：一条弱发现就把整篇拉成「低」，正是用户读到的那个毛病。
+    ⛔ 不取最高：那是把报告说得比证据强。取中位、平局偏低，既能分出差别，
+    又不会把一份四条里三条弱的稿说成「中」。
+    """
+    order = {tier: i for i, tier in enumerate(CONFIDENCE_TIERS)}
+    ranked = sorted((order.get(t, len(CONFIDENCE_TIERS) - 1) for t in tiers or []))
+    if not ranked:
+        return ""
+    # `CONFIDENCE_TIERS` 是强 → 弱，所以下标大的是弱的那一档。偶数条时两个中位取
+    # **下标大的**那个 = 偏低。⚠️ 第一版写的是 `(len-1)//2`（偏高），与这段说明
+    # 正好相反，真机四条 低2/中1/高1 会判成「中」；量出来对不上先查尺子，这里是尺子。
+    return CONFIDENCE_TIERS[ranked[len(ranked) // 2]]
+
+
+def confidence_line(tables: Mapping[str, Any], counts: Mapping[str, Any] | None = None,
+                    findings: Sequence[Finding] = (),
+                    sources: Sequence[Mapping[str, Any]] = ()) -> str:
     """§RPT-3 货 4：执行摘要把握度那句之后的一行数字，程序从 crossref_mix 取、不经模型。
 
     评审实测：摘要写「绝大多数结论只有一个来源撑着」，那个数（255/310）读者全文找不到。
     §RPT-4 C-11：去掉「（程序按交叉验证结论计数）」前缀（机器话）；`counts` 里有正文实引数
     （`BODY_CITED_KEY`，`polish` 组装后回填）就接一句「正文实际引用证据 N 条」——
     09-14 评审实测摘要写「支撑本报告结论的是 80 条被引证据」，80 是引用池条数，正文实引 28。
+
+    §RPT-8 货 1 + 货 2：**这一行换内容了**（⚠️ 旧语义「主张 1358 条：单源 1254 / …」
+    被本包有意替换，锁它的那两条老用例跟着改，不是改尺子作弊）。理由：那串数是
+    内部计数，客户读到「单源 1254」只会更慌，而它回答不了「这几条发现我能信几分」。
+    真实数字一条不改，整段挪进附录「把握度读数」那一节，配一句人话（`confidence_tables`）。
+
+    换上来的是**逐条关键发现的把握度**（货 1）：给了 `findings` 与 `sources` 就逐条算，
+    并写出整篇那句总括是**怎么由各条汇总**的（`overall_confidence`：取中位、平局偏低）。
+    两样有一样没给（老调用方、或摘要里读不出发现列表）就退回只写正文实引数——
+    **不退回旧的那串内部计数**，那是本包要拿掉的东西。
     """
-    total, pairs = _crossref_counts(tables)
-    if not total or not pairs:
-        return ""
-    parts = " / ".join(f"{_CROSSREF_WORDS.get(k, '未登记')} {n}" for k, n in pairs)
     tail = ""
     body_cited = (counts or {}).get(BODY_CITED_KEY)
     if isinstance(body_cited, int) and not isinstance(body_cited, bool):
@@ -562,24 +768,53 @@ def confidence_line(tables: Mapping[str, Any], counts: Mapping[str, Any] | None 
         tail = (f"正文实际引用证据 {body_cited} 条"
                 + (f"（引用池共 {pool} 条）" if isinstance(pool, int) and pool != body_cited else "")
                 + "。")
-    return f"主张 {total} 条：{parts}。{tail}"
+    tiers = finding_confidences(findings, sources, tables)
+    if not tiers:
+        return tail
+    listed = "、".join(f"第 {index} 条{tier}" for index, tier, _ in tiers)
+    overall = overall_confidence([tier for _, tier, _ in tiers])
+    return (f"这 {len(tiers)} 条关键发现的把握度：{listed}——"
+            f"按每条自己引的证据算（来源独立到什么程度、等级多高、有多少条已编码评论撑着，"
+            f"逐条依据见附录「把握度读数」）；整篇取各条的中位档，即「{overall}」。{tail}")
 
 
 #: `tables.json` 的 `counts` 里「正文实引条数」的键。组装完才知道，由 `polish` 回填。
 BODY_CITED_KEY = "正文实引"
 
 
-def confidence_tables(tables: Mapping[str, Any]) -> str:
-    """§RPT-3 货 4：交叉验证分布 + 被引证据等级分布两张表，照 `lexicon_reference_table` 的形态挂附录。"""
+def confidence_tables(tables: Mapping[str, Any],
+                      findings: Sequence[Finding] = (),
+                      sources: Sequence[Mapping[str, Any]] = ()) -> str:
+    """§RPT-3 货 4：交叉验证分布 + 被引证据等级分布两张表，照 `lexicon_reference_table` 的形态挂附录。
+
+    §RPT-8 货 1：**最前面再加一张逐条关键发现的把握度表**——摘要那一行只给档位，
+    「凭什么是这一档」得看得见，否则又成了一个读者查不动的判断。
+    §RPT-8 货 2：主张计数那串数从摘要挪到这里（真实数字一条不改），配一句人话说清
+    它为什么天生偏大：一条主张挂几条证据是**采写形态**决定的，不是结论可不可信的直接读数。
+    """
     total, pairs = _crossref_counts(tables)
     grade = (tables or {}).get("grade_mix")
     grade_rows = [r for r in (grade.get("rows") or []) if isinstance(r, Mapping)] \
         if isinstance(grade, Mapping) else []
-    if not pairs and not grade_rows:
+    tiers = finding_confidences(findings, sources, tables)
+    if not pairs and not grade_rows and not tiers:
         return ""
     lines = [CONFIDENCE_HEADING, "",
              "（本节由程序按主张登记与证据评级直接计数，未经改写。执行摘要里「把握度」"
-             "那句的依据就是这两张表。）"]
+             "那句的依据就是下面这几张表。）"]
+    if tiers:
+        lines += ["", "| 关键发现 | 把握度 | 凭什么是这一档 |", "|---|---|---|"]
+        for index, tier, reason in tiers:
+            lines.append(f"| 第 {index} 条 | {tier} | {reason} |")
+        overall = overall_confidence([tier for _, tier, _ in tiers])
+        # ⚠️ 这一句里**不许写「偏低」**：它是尺子⑥ 的评价词，会被判成「没写清在说谁」。
+        # 本包的整跑前离线复核当场抓到（`var/rpt8/after-draft-check.txt` 第一版）——
+        # 程序块自己也要过尺子，写的时候容易忘。
+        lines += ["", f"整篇那句总括取各条的中位档（条数为偶数时取更弱的那一档），"
+                      f"本稿是「{overall}」。一条发现要判「高」，"
+                      f"得同时做到：来自 ≥2 个互相独立的出处、跨 ≥2 个平台、"
+                      f"最强证据是 A 或 B 级、有别的来源印证过、"
+                      f"并且落在一格 ≥{CODED_STRONG} 条评论的编码格上。"]
     if pairs:
         meaning = {"SINGLE": "只有一个来源撑着", "WEAK": "有多个来源但证据偏弱",
                    "PASS": "多个独立来源互相印证", "CONFLICT": "多个来源说法互相冲突"}
@@ -588,7 +823,14 @@ def confidence_tables(tables: Mapping[str, Any]) -> str:
             share = f"{round(count * 100 / total, 1):g}%" if total else "—"
             lines.append(f"| {_CROSSREF_WORDS.get(key, '未登记')} | {count} | {share} "
                          f"| {meaning.get(key, '未登记')} |")
-        lines += ["", f"主张共 {total} 条。"]
+        # §RPT-8 货 2：这串数以前印在执行摘要里，客户第一眼读到的就是「单源 1254」。
+        # 数一个字没改，挪到这里并说清它为什么天生偏大——否则读者会把「采写形态」
+        # 当成「结论不可信」，而那正是用户 09-18 读稿时的反应。
+        lines += ["", f"主张共 {total} 条。**这张表偏向「单源」是这类研究的常态，"
+                      f"不等于结论都不可信**：一条主张记的往往就是「某平台有用户反馈 X」，"
+                      f"它结构上只会挂一条证据，多挂一条反而说明两处说了同一件事。"
+                      f"所以判「这几条发现能信几分」看的是上面那张逐条表，"
+                      f"不是这张分布表的占比。"]
     if grade_rows:
         label = {"?": "未评级"}
         lines += ["", "| 等级 | 被引条数 | 全库条数 | 含义 |", "|---|---|---|---|"]
@@ -597,6 +839,63 @@ def confidence_tables(tables: Mapping[str, Any]) -> str:
             lines.append(f"| {label.get(key, key)} | {_cell(row.get('被引条数'))} "
                          f"| {_cell(row.get('全库条数'))} | {_cell(row.get('含义'))} |")
         lines += ["", f"被引证据 {grade.get('n')} 条｜口径：{plain_words(str(grade.get('basis') or ''))}"]
+    return "\n".join(lines) + "\n"
+
+
+#: §RPT-8 货 4②：线索原文里不许出现的内部标记。⛔ 这**不是**验收尺子那份
+#: `check_polished.FORBIDDEN` 的第二份定义——判据仍归尺子，这里只是**投料前的筛子**：
+#: 主张原文是各章 agent 写的，偶尔带 `goal-1`、`ch-3` 这类切块标记，照抄进附录
+#: 就成了尺子①的红。宁可少放一条线索，也不放一条带内部标记的进去。
+_CLUE_REJECT = re.compile(r"goal-\d|sec-\d|ch-\d|本片|本节样本|本章样本|上游目标|[\w/.-]+\.py")
+#: 附录线索区最终摆几条。⛔ 一处定义：从 `tables` 那边取，别在这里另写一个数——
+#: 候选池上限（`CLUE_POOL`）与呈现上限是两件事，两处各写一个数迟早对不上。
+from app.report.polish.tables import CLUE_LIMIT  # noqa: E402
+
+
+def clues_block(clues: Sequence[Mapping[str, Any]], exclude: Iterable[int] = ()) -> str:
+    """§RPT-8 货 4②：把单人线索照抄成附录的一节。程序写，⛔ 不经模型。
+
+    **为什么归程序、归附录，而不是让写手写进正文**：§SEL-1 09-18 查实，写手把 79 条
+    池位一条不漏全引了，丢是丢在正式稿改写那一层；而写手正文已经 8 674 字符、
+    模板带宽上限 9 000——再要它多写一节只能靠删别处（限定句是最先被删的那种）。
+    程序块不计入写手篇幅（`check_polished.writer_body` 按 `PROGRAM_APPENDIX_HEADINGS`
+    剜掉程序块），所以这一节是**加出来的**，不是换来的。
+
+    **为什么摆成表而不是列表**：验收尺子④「数字有出处」按行扫正文数字，表格行它整行
+    跳过。线索原文里带数字（「用了俩礼拜」「三级订阅」）很常见，而这些数字的出处就是
+    那条评论本身、不在任何一张聚合表里——摆成列表会一条条判红。
+
+    `exclude` 给正文已经引过的角标：正文写过的就不在这里再摆一遍（同一条东西出现两次，
+    读者第二次只会跳过）。⚠️ **封顶封在剔除之后**——反过来会把该露面的那几条挡在
+    名额之外（本包实测踩过，8 条筛完只剩 2 条且全不是要的）。
+    """
+    skipped = {int(n) for n in exclude or ()}
+    rows = []
+    for clue in clues or []:
+        if not isinstance(clue, Mapping) or not clue.get("text"):
+            continue
+        mark = str(clue.get("mark") or "")
+        if mark and int(mark[1:]) in skipped:
+            continue
+        if _CLUE_REJECT.search(str(clue["text"])):
+            continue
+        rows.append(clue)
+        if len(rows) >= CLUE_LIMIT:
+            break
+    if not rows:
+        return ""
+    lines = [CLUES_HEADING, "",
+             "下面每一条都只有**一个人、一条内容**说过，本轮没有第二个来源印证，"
+             "所以它们不进关键发现、也不做建议的依据。列在这里是因为它们足够具体，"
+             "值得下一轮专门去核：核实了就是结论，核不出来就该划掉。",
+             "", "| 线索 | 出处 |", "|---|---|"]
+    for clue in rows:
+        mark = str(clue.get("mark") or "")
+        where = (f"[{mark}]" if mark
+                 else f"{clue.get('platform') or '社媒'}评论 · 本轮未进引用池，点不到原文")
+        lines.append(f"| {clue['text']} | {where} |")
+    lines += ["", f"共 {len(rows)} 条。没有角标的那几条是本轮**没进引用池**的证据——"
+                  f"库里有这条内容、正文点不到它的原文，要核得下一轮重新采。"]
     return "\n".join(lines) + "\n"
 
 
@@ -629,7 +928,49 @@ def attitude_line(tables: Mapping[str, Any], subjects: Sequence[str] = ()) -> st
     who = "、".join(str(s) for s in subjects if s)
     scope = (f"只数点名了{who}的评论；这批评论取自引用池，不是随机抽样，口径见附录「各表口径」"
              if who else "这批评论取自引用池，不是随机抽样，口径见附录「各表口径」")
-    return f"已编码评论 {int(table['n'])} 条：{parts}（{scope}）。"
+    return (f"已编码评论 {int(table['n'])} 条：{parts}（{scope}）。"
+            + attitude_traceability(tables))
+
+
+#: §RPT-8 货 4①：这一行要交代可追溯性的那个态度档。⛔ 只挑「负」一个：
+#: 客户读到负向条数会去找那几条原文，找不到就是这份稿最难看的一处（用户 09-18 报的
+#: 正是「摘要写负 17 条，只有 2 条点得到」）；四档都写一遍会把这一行撑成一段。
+_TRACED_ATTITUDE = "负"
+
+
+def attitude_traceability(tables: Mapping[str, Any]) -> str:
+    """§RPT-8 货 4①：负向那几条里，有多少条点得到原文、多少条本轮没进引用池。
+
+    用户 09-18 读第三轮稿：摘要写「负 17 条」，翻遍全稿只有 2 条能点开。这不是
+    写手偷懒——那 17 条里只有 2 条进了引用池，其余 15 条库里有编码、没有可点的角标。
+    **说清楚比藏起来强**，所以这句话由程序算、程序写：
+
+    - 条数从 `scenario_attitude` 的负向各行相加（与上一行的「负 N」同一个数，
+      同一张表同一次读，⛔ 不另算一遍）；
+    - 点得到的那些从各行的 `marks` 取并集（`coding._row_marks` 已经算好：
+      这一格里**进了引用池**的角标，一个角标对一条证据，所以并集的个数就是条数）。
+
+    真机 r-3b3482ca7f8b 读出来是 17 条里 2 条（[S17][S21]），其余 15 条没进池。
+    """
+    table = (tables or {}).get("scenario_attitude")
+    if not isinstance(table, Mapping):
+        return ""
+    total, marks = 0, set()
+    for row in table.get("rows") or []:
+        if not isinstance(row, Mapping) or str(row.get("态度")) != _TRACED_ATTITUDE:
+            continue
+        total += int(row.get("条数") or 0)
+        marks |= set(_mark_numbers(row.get("marks")))
+    if not total:
+        return ""
+    if not marks:
+        return (f"其中{_TRACED_ATTITUDE}向 {total} 条本轮一条都没进引用池，"
+                f"正文点不到它们的原文——这是取数的缺口，不是没人这么说。")
+    listed = "".join(f"[S{n:02d}]" for n in sorted(marks))
+    rest = total - len(marks)
+    tail = (f"，其余 {rest} 条本轮没进引用池、正文点不到原文" if rest > 0 else "")
+    return (f"其中{_TRACED_ATTITUDE}向 {total} 条里有 {len(marks)} 条点得到原文"
+            f"（{listed}）{tail}。")
 
 
 def _confidence_index(lines: Sequence[str]) -> int | None:
@@ -896,8 +1237,16 @@ def assemble(parts: Sequence[tuple[str, Path]],
     for name, body in bodies:
         if tables and name in OPENING_SECTIONS and attitude_line(tables, subjects):
             body = _inject_after_findings(body, attitude_line(tables, subjects))
-        if tables and name in OPENING_SECTIONS and confidence_line(tables, counts):
-            body = _inject_after_confidence(body, confidence_line(tables, counts))
+        # ⚠️ `if tables` 这一道老守卫留着：没有表就一行都不注入（`assemble(parts)`
+        # 裸调用是骨架用例锁着的老行为）。⛔ 别顺手去掉——本包第一版去掉了它，
+        # 骨架用例当场判红。
+        if tables and name in OPENING_SECTIONS:
+            # §RPT-8 货 1：把握度那一行要**逐条**算，发现列表就在这一节的正文里，
+            # 用切片时同一个 `parse_findings` 读——两处各写一份解析，写手换个写法
+            # 就会一处跟得上一处跟不上（§D-072 踩过同一形状的坑）。
+            line = confidence_line(tables or {}, counts, parse_findings(body), sources)
+            if line:
+                body = _inject_after_confidence(body, line)
         chunks.append(f"# {name}\n\n{body}")
     # §POOL-1 丁′：缺失清单与各表口径也由程序生成，与信息源清单一样挂在末节。
     # 它们本来就是「把现成字段照列一遍」，让模型誊抄既费引擎又会抄错。
@@ -1325,6 +1674,123 @@ def false_fact_lines(markdown: str) -> list[tuple[int, str]]:
     return hits
 
 
+#: 写手那句总括把握度的档位。`**低**`、`低`、`「低」` 都认——形态不该决定判定
+#: （§D-072 那条教训：只认引用块，写成普通段落就匹配失灵）。
+_CONFIDENCE_SAID = re.compile(r"把握度[^\n]{0,8}?为[*_`「\"'【\[]*\s*([高中低])")
+
+
+def stated_confidence(markdown: str) -> str:
+    """写手在开篇节写的那个档位；写了别的形态读不出来就返回空串。"""
+    for line in markdown.splitlines():
+        if "把握度" not in line:
+            continue
+        found = _CONFIDENCE_SAID.search(line)
+        if found:
+            return found.group(1)
+    return ""
+
+
+def confidence_mismatch(markdown: str, sources: Sequence[Mapping[str, Any]],
+                        tables: Mapping[str, Any]) -> list[str]:
+    """§RPT-8 货 1：那句总括把握度必须与**逐条汇总出来的**那一档一致。
+
+    不这么锁的话，把握度还是写手拍脑袋定的一个词——提货单写死「⛔ 不许让把握度
+    脱离库读数（要能从 tables 读得出来）」，能读出来但没人对，等于没读。
+
+    读不出发现列表（写手没按格式写编号行）就不判：那是**另一道闸**的事
+    （切片解析失灵有它自己的兜底），在这里顺手判红会把两个毛病混成一条判词。
+    """
+    findings = parse_findings(markdown)
+    if not findings:
+        return []
+    tiers = [tier for _, tier, _ in finding_confidences(findings, sources, tables)]
+    expected = overall_confidence(tiers)
+    said = stated_confidence(markdown)
+    if not expected or not said or said == expected:
+        return []
+    listed = "、".join(f"第 {i} 条{t}" for i, t in enumerate(tiers, 1))
+    return [f"那句总括把握度写的是「{said}」，但按各条关键发现自己引的证据汇总出来是"
+            f"「{expected}」（{listed}；取中位档，偶数条取更弱的那一档）。"
+            f"把那句改成「{expected}」并把理由改成一句人话——⛔ 不许改各条的角标来凑档位。"]
+
+
+#: §RPT-8 货 3：普遍化断言词。一条把握度低的发现不许拿它们当标题——
+#: 真机第 4 条只有同一帖下两条评论，标题却写成「豆包的负向声音多落在……」。
+OVERREACH_WORDS = ("普遍", "大多数", "多数用户", "大部分用户", "主流", "集体",
+                   "广泛", "人人", "所有用户", "一致认为", "成为共识", "无一例外")
+#: 交代了证据规模/范围的写法。低把握度的发现行必须带一处，读者才知道这句话有多大。
+#: 数量词（「两篇」「10 条」）与范围词（「同一帖」「本轮样本」）都算。
+_SCALE_WORDS = ("同一帖", "同一条", "同一篇", "同一个", "本轮", "本批", "这一批",
+                "单条", "单篇", "至少在", "仅在", "只在", "样本", "一例", "个别")
+_SCALE_COUNT = re.compile(r"[0-9０-９]+\s*[条篇个位人家]|[一二两三四五六七八九十]\s*[条篇个位人家]")
+
+
+def _has_scale(text: str) -> bool:
+    return bool(_SCALE_COUNT.search(text)) or any(w in text for w in _SCALE_WORDS)
+
+
+def oversized_finding_lines(markdown: str, sources: Sequence[Mapping[str, Any]],
+                            tables: Mapping[str, Any]) -> list[str]:
+    """§RPT-8 货 3：发现的标题不得强过它的证据。判的是**摘要里那几条发现行**。
+
+    两条判词，都只对把握度判「低」的那几条生效（`finding_confidence` 同一把尺子）：
+
+    ① 不许出现普遍化断言词（`OVERREACH_WORDS`）——「多数用户」这种话，两条同帖
+       评论撑不起来；
+    ② 必须在同一行里交代证据规模（几条/几篇，或「同一帖下」「本轮样本」这类范围词）。
+       实测真机第 1 条（两篇公众号，其中一篇自述有利益关系）写的是「媒体侧已把豆包
+       定位切到办公与生产力入口」，整行读不出它只有两篇文章——②判的就是这个。
+
+    ⛔ 为什么挡在**写作期**（`_write_target`）而不是只留给验收尺子：红一条发现
+    = 重写一片，挡在尺子里要等整轮 50 分钟跑完才看得见（§WRITE-1 货 4 同一条道理）。
+    验收那头留一条同名判据作兜底，两处 import 同一个函数。
+    """
+    if not tiering_available(sources, tables):
+        return []
+    problems = []
+    for finding in parse_findings(markdown):
+        tier, reason = finding_confidence(finding.marks, sources, tables)
+        if tier != CONFIDENCE_TIERS[-1]:
+            continue
+        hit = next((w for w in OVERREACH_WORDS if w in finding.text), None)
+        if hit:
+            problems.append(
+                f"第 {finding.index} 条发现的把握度是低（{reason}），标题里却写了"
+                f"「{hit}」：这是普遍化断言，它的证据撑不起。改成只说这批样本里的事，"
+                f"例如「在本轮采到的 N 条里，……」。")
+        if not _has_scale(finding.text):
+            problems.append(
+                f"第 {finding.index} 条发现的把握度是低（{reason}），整行读不出它的证据"
+                f"有多大：在这一行里加一处规模或范围，例如「两篇公众号文章显示……」"
+                f"「同一条帖子下的两条评论显示……」「本轮样本里……」。")
+    return problems
+
+
+def oversized_shard_title(text: str, finding: Finding | None,
+                          sources: Sequence[Mapping[str, Any]],
+                          tables: Mapping[str, Any]) -> list[str]:
+    """§RPT-8 货 3 的另一半：展开那一节的二级标题也不许强过证据。
+
+    这里只查普遍化断言词，**不查规模**：二级标题是一句结论，塞进「本轮 12 条」
+    会把标题写成口径行。规模归发现行（上面那条）与节内正文管。
+    """
+    if finding is None or not tiering_available(sources, tables):
+        return []
+    tier, reason = finding_confidence(finding.marks, sources, tables)
+    if tier != CONFIDENCE_TIERS[-1]:
+        return []
+    problems = []
+    for line in text.splitlines():
+        if not line.startswith("## "):
+            continue
+        hit = next((w for w in OVERREACH_WORDS if w in line), None)
+        if hit:
+            problems.append(
+                f"这条发现的把握度是低（{reason}），二级标题里却写了「{hit}」："
+                f"把标题改成只说这批样本里的事（{line.strip()[:34]}）。")
+    return problems
+
+
 #: 建议降级区的小标题。共用规则 §6.5.4：全是孤证的想法机械降级放进这里。
 DOWNGRADE_HEADING = "值得进一步验证的方向"
 #: 建议节的节名（含读者不明时的改名与竞品稿自带的那一节）。三处都受同一道门禁管。
@@ -1356,7 +1822,28 @@ def singlesource_advice(lines: Sequence[str], crossref: Mapping[int, Any]) -> li
     这个函数是**生产与验收共用的那一个**：验收尺子 `check_polished._advice_entry_problems`
     直接 import 它。同一个概念两处两个定义，是本项目现形过的一种假绿。
     """
-    problems, entries, current = [], [], []
+    problems = []
+    for entry in advice_entries(lines):
+        text = "\n".join(entry)
+        marks = _mark_numbers(text)
+        verdicts = {str(crossref.get(n)) for n in marks if crossref.get(n)}
+        if marks and verdicts and verdicts == {"SINGLE"}:
+            problems.append(
+                f"这条建议只有单源孤证撑着，应降级到「{DOWNGRADE_HEADING}」："
+                f"{text.strip()[:46]}")
+    return problems
+
+
+def advice_entries(lines: Sequence[str]) -> list[list[str]]:
+    """建议节里**受门禁管的**那几条，按「条」切开（降级区之后的不返回）。
+
+    §RPT-8 货 5 把它从 `singlesource_advice` 里抽出来：本包要在同一批条目上再加一条
+    判词（证据太弱的建议），两道闸必须切在同一个地方。⛔ 不许另写一份切法——
+    切得不一样时，一道闸认为降级区已经开始、另一道还在判，写手照两份相反的判词改，
+    改不到点上（§D-083 那 2 h 37 min 就是这个形状）。
+    """
+    entries: list[list[str]] = []
+    current: list[str] = []
     for line in lines:
         if line.strip().startswith("#"):
             if DOWNGRADE_HEADING in line:
@@ -1372,15 +1859,52 @@ def singlesource_advice(lines: Sequence[str], crossref: Mapping[int, Any]) -> li
         current.append(line)
     if current:
         entries.append(current)
-    for entry in entries:
+    return entries
+
+
+def weakevidence_advice(lines: Sequence[str], sources: Sequence[Mapping[str, Any]],
+                        tables: Mapping[str, Any]) -> list[str]:
+    """§RPT-8 货 5：建议只能从**够格**的发现推；不够格的要么降级、要么写明证据强度。
+
+    与 `singlesource_advice` 的关系是**扩展，不是另起一套**（提货单原话：⛔ 不许两套
+    规则互相打架）。分工写死在这里，看一眼就分得清：
+
+    - `singlesource_advice` 管**交叉验证结论**：所引角标全是单源孤证 ⇒ 必须降级；
+    - 本函数管**证据强度**：把这条建议所引的角标当成一条发现来判把握度
+      （`finding_confidence`，同一把尺子），判出「低」⇒ 要么降级，要么在这一条里
+      写明它的证据有多弱（「把握度：低」这种明说就放行）。
+
+    两道闸切的是**同一批条目**（`advice_entries`），降级区之后两道都不管，所以
+    不会出现「一道说要降级、另一道说这条不用管」。全是孤证的那种两道都会命中，
+    判词各说各的那一面，写手照任一条改都落在同一个动作上（降级），不冲突。
+    """
+    if not tiering_available(sources, tables):
+        return []
+    problems = []
+    for entry in advice_entries(lines):
+        # ⛔ 只判**编号条目**。`advice_entries` 会把第一条编号之前的那一段（读者含义
+        # 那几个 bullet、引子句）也归成一条，那不是一条建议，判它等于判错人。
+        # `singlesource_advice` 的老行为不动——那是既有判词，本包不改它的判域。
+        if not entry or not _ENTRY_HEAD.match(entry[0]):
+            continue
         text = "\n".join(entry)
-        marks = [int(n) for n in re.findall(r"\[?S(\d{2,})\]?", text)]
-        verdicts = {str(crossref.get(n)) for n in marks if crossref.get(n)}
-        if marks and verdicts and verdicts == {"SINGLE"}:
-            problems.append(
-                f"这条建议只有单源孤证撑着，应降级到「{DOWNGRADE_HEADING}」："
-                f"{text.strip()[:46]}")
+        marks = _mark_numbers(text)
+        if not marks:
+            continue
+        tier, reason = finding_confidence([f"S{n:02d}" for n in marks], sources, tables)
+        if tier != CONFIDENCE_TIERS[-1] or _STATED_WEAK.search(text):
+            continue
+        problems.append(
+            f"这条建议的证据撑不起一句行动建议（{reason}），要么降级到"
+            f"「{DOWNGRADE_HEADING}」，要么在这一条里写明「把握度：低（一句理由）」："
+            f"{text.strip()[:46]}")
     return problems
+
+
+#: 已经把证据弱说在明处的写法。写了就放行——共用规则要的是「别让读者以为它很硬」，
+#: 不是「不许提」。⛔ 不匹配整行任意位置的「低」：「成本低」「门槛低」不是在说证据。
+_STATED_WEAK = re.compile(r"把握度[：:]\s*[*_`]*低|证据(?:强度)?[：:]\s*[*_`]*弱|"
+                          r"单源孤证|仅一条|只有一条|尚待(?:其他)?(?:来源|印证)")
 
 
 def _ctx(path: Path, research_id: str, runs_root: Path) -> validation.Ctx:
@@ -1690,6 +2214,22 @@ async def _write_target(adapter: Any, skill: Template, data: Mapping[str, Any],
                           + unlabeled_quotes(text, grade_by_mark))
         if current in ADVICE_SECTIONS:
             quote_problems += singlesource_advice(text.splitlines(), crossref)
+            # §RPT-8 货 5：与上一行同一批条目、同一个切法（`advice_entries`），
+            # 上一行管交叉验证结论，这一行管证据强度。分工写在 `weakevidence_advice`。
+            quote_problems += weakevidence_advice(
+                text.splitlines(), data.get("sources") or [], data.get("tables") or {})
+        if current in OPENING_SECTIONS:
+            # §RPT-8 货 1 + 货 3：把握度那句要与逐条汇总对得上，把握度低的那几条
+            # 发现不许把标题写得比证据大。挡在写作期 = 当轮重写这一节；挡在验收尺子
+            # 里要等整轮跑完才看得见（§WRITE-1 货 4 同一条道理）。
+            quote_problems += confidence_mismatch(
+                text, data.get("sources") or [], data.get("tables") or {})
+            quote_problems += oversized_finding_lines(
+                text, data.get("sources") or [], data.get("tables") or {})
+        # §RPT-8 货 3 的另一半：展开那一片的二级标题。只在切了片、且这一片
+        # 对得上某条发现时才判（`finding` 为 None 就不判，退回老行为）。
+        quote_problems += oversized_shard_title(
+            text, finding, data.get("sources") or [], data.get("tables") or {})
         # §RPT-4 C-11：机器话挡在写作期。09-15 重出稿软检读到「被程序按互动量取为代表」「⛔ 不能读成」，
         # 只判黄的话整轮 50 分钟付完才看得见；这几个词在客户稿里没有合法用法，当轮重写这一节/片。
         quote_problems += [
@@ -1840,12 +2380,18 @@ async def polish(store: Any, research_id: str, runs_root: Path, report_text: str
                 f"{'、'.join(merged_offpool)}——合并取错片了。"])
     from app.report.render import parse_report
 
+    # §RPT-8 货 1：附录那张逐条把握度表读的发现列表，与摘要那一行、与切片用的
+    # 是同一份 `parse_findings`（开篇节的正文）。⛔ 不另起一条解析路。
+    opening_findings = next(
+        (parse_findings(path.read_text(encoding="utf-8"))
+         for name, path in parts if name in OPENING_SECTIONS and path.is_file()), [])
     markdown = assemble(parts, data.get("sources") or [], tables=data.get("tables") or {},
                         subjects=data.get("subjects") or (),
                         counts=data.get("counts") or {},
                         appendix_blocks=(
         # §RPT-3 货 4：把握度的两张分布表由程序挂附录，摘要那句的依据读者看得见。
-        confidence_tables(data.get("tables") or {}),
+        confidence_tables(data.get("tables") or {}, opening_findings,
+                          data.get("sources") or []),
         missing_table(parse_report(report_text).get("missing") or [],
                       data.get("objectives") or [],
                       chapters=data.get("chapters") or []),
@@ -1860,6 +2406,9 @@ async def polish(store: Any, research_id: str, runs_root: Path, report_text: str
         contrast_reference_table(data.get("tables") or {}),
         # §RPT-4 C-14：证据时间范围一句。
         timespan_block(data.get("tables") or {}),
+        # §RPT-8 货 4②：单人线索。正文引过的不再摆一遍，所以要先数正文实引角标
+        # （`body_marks` 是纯函数，这里数与下面回填 `counts` 数的是同一批片）。
+        clues_block(data.get("clues") or [], body_marks(parts)),
     ))
     # §RPT-4 C-11：正文实引条数组装完才知道，回填进 tables.json 的 counts——
     # 摘要里注入的「正文实际引用证据 N 条」要在尺子 ④ 的白名单里有出处。

@@ -757,6 +757,80 @@ def _audience(plan: Mapping[str, Any]) -> dict[str, str]:
             "audience_stake": str(stake or "").strip()}
 
 
+#: §RPT-8 货 4②：一条线索最多摘这么多字。主张原文通常 60–120 字，超长的多半是把
+#: 三件事写进了一句，截断比整条丢掉好。
+CLUE_CHARS = 110
+#: 投进 `tables.json` 的候选上限。呈现层还要再筛（正文引过的不重复摆）与封顶，
+#: 所以这里放宽一档——**⛔ 封顶必须封在筛之后**：第一版先封 8 再筛，筛完只剩 2 条，
+#: 而且把用户点名要的那几条（Windows 输入法、视频电话「要疯了」）全挡在了 8 条之外。
+CLUE_POOL = 20
+#: 附录线索区最终摆几条。8 条是「一页看得完」的量。
+CLUE_LIMIT = 8
+#: 自己就说了「这条不作数」的主张。⛔ 它们不是线索，是各章 agent 留的登记备注，
+#: 摆进「值得核的线索」等于让读者去核一条已经被判为噪声的东西。
+_CLUE_NOISE = ("噪声", "不采信", "无直接关联", "与豆包无关", "语义无关")
+
+
+def _clues(claims: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]],
+           offtopic_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """§RPT-8 货 4②：值得核的**单条**信号。
+
+    用户 09-18 读第三轮稿抓到的：库里躺着「Windows 端输入法起步晚」「每天打视频电话
+    要疯了」「《海阔天空》按非粤语处理」「用了俩礼拜一分钱没花」这类很具体的产品信号，
+    **正文一条都没有**——它们都是单源孤证，而关键发现只收撑得住的那几条，整批被筛没了。
+
+    筛法（四条，全是既有读数，⛔ 不新造判断）：
+
+    1. `verdict == "SINGLE"`：正因为它是单源才进这里——这一节收的就是没被印证的信号；
+    2. `firsthand`：亲历者自己说的，转述与二手评论不进（`claims[].firsthand`）；
+    3. 不是旁证：对照实体与海外平台的证据不进。判旁证的是 `offtopic_reason`
+       ——§RPT-4 有意加的那道闸，本块**照它办，⛔ 不绕过**（`offtopic_ids` 由
+       `build_tables` 按同一个函数算好传进来，那里才有 agent → 实体的映射）；
+    4. 自己写着「噪声 / 不采信 / 无直接关联」的不进（`_CLUE_NOISE`）。
+
+    ⚠️ **不要求进引用池。** 这是本包实测改掉的一条：用户点名的那五条信号，
+    `citation_no` 全是 `None`——它们是 C 级评论，本轮压根没进池。要求带角标等于
+    把这一货要的东西全筛掉。没进池的照收，呈现层写明「本轮未进引用池、点不到原文」
+    （与货 4① 同一条道理：说清楚比藏起来强）。没角标的行不违反尺子③，
+    ③ 查的是「出现的角标在不在池里」，不是「每行都得有角标」。
+
+    次序：**按主张在库里的登记次序**取前 `CLUE_POOL` 条，一条证据只留最先登记的
+    那一句。⛔ 不按「谁更重要」排——那是模型判断，本块不经模型；也不按字数排，
+    实测最长的那句往往是最啰嗦的那句（「……属单条用户反馈，尚待其他来源印证」），
+    真正具体的那句反而被它挤掉。
+    """
+    # 渠道名走同一张表（`chapter_rows` 也是从这里取），⛔ 不另写一份中文名映射。
+    from app.platforms import PLATFORMS
+
+    skip = {str(x) for x in offtopic_ids or ()}
+    by_id = {str(r.get("id")): r for r in rows if r.get("id")}
+    picked: dict[str, dict[str, Any]] = {}
+    texts: set[str] = set()
+    for claim in claims or []:
+        if str(claim.get("verdict") or "") != "SINGLE" or not claim.get("firsthand"):
+            continue
+        text = " ".join(str(claim.get("text") or "").split())
+        if not text or text in texts or any(w in text for w in _CLUE_NOISE):
+            continue
+        for evidence_id in claim.get("evidence_ids") or []:
+            key = str(evidence_id)
+            row = by_id.get(key)
+            if row is None or key in skip or key in picked:
+                continue
+            number = row.get("citation_no")
+            picked[key] = {
+                "mark": _mark(int(number)) if number is not None else None,
+                "platform": PLATFORMS[str(row.get("platform") or "")].display_name
+                            if str(row.get("platform") or "") in PLATFORMS
+                            else str(row.get("platform") or ""),
+                "text": text[:CLUE_CHARS]}
+            texts.add(text)
+            break                       # 一条主张只占一个位子，不重复摆同一句话
+        if len(picked) >= CLUE_POOL:
+            break
+    return list(picked.values())
+
+
 def build_tables(*, report: Mapping[str, Any], plan: Mapping[str, Any],
                  evidence: Sequence[Mapping[str, Any]], claims: Sequence[Mapping[str, Any]],
                  view: Mapping[str, Any]) -> dict[str, Any]:
@@ -867,7 +941,20 @@ def build_tables(*, report: Mapping[str, Any], plan: Mapping[str, Any],
         entity = entity_by_agent.get(str(r.get("agent_name") or ""), "")
         contrast_by_mark[int(r["citation_no"])] = (
             None if not entity else entity not in subject_names)
+    # §RPT-8 货 4②：哪些证据是旁证（对照实体 / 海外平台）。判法与 `sources[].offtopic`
+    # **同一个** `offtopic_reason`，只是这里按证据行算——线索不要求进引用池，
+    # 按角标算的那一份不够用（没进池的证据根本没有角标）。
+    offtopic_ids = set()
+    for row in rows:
+        row_entity = entity_by_agent.get(str(row.get("agent_name") or ""), "")
+        if offtopic_reason({"platform": row.get("platform")},
+                           contrast=None if not row_entity else row_entity not in subject_names,
+                           question=question):
+            offtopic_ids.add(str(row.get("id")))
     return {
+        # §RPT-8 货 4②：单人线索。放在返回值里而不是算进某张表——它不是一张聚合表，
+        # 是几条**具体的单条信号**，程序照抄主张原文挂附录。
+        "clues": _clues(claims, rows, offtopic_ids),
         "research_id": report.get("id"),
         "research_question": plan.get("research_question") or report.get("research_question"),
         "title": view.get("title") or report.get("title"),
