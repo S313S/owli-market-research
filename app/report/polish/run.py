@@ -117,13 +117,24 @@ def clear_stale_parts(runs_root: Path, research_id: str, template: str) -> list[
 #: 尺子按它切掉程序块再量写手的篇幅——同一个概念两处两个定义是本项目现形过的假绿。
 SOURCES_HEADING = "## 信息源清单"
 MISSING_HEADING = "## 哪些没采到"
+#: §RPT-7 货 1：从「哪些没采到」拆出去的两节。用户 09-18 读第三轮正式稿圈出那张表问
+#: 「这是什么情况」——他在一张表里同时看见了三件根本不同的事：真的一条没采到、
+#: 采到了只是没写成段、以及压根不在采的内部处理环节。一张表答不了三个问题。
+#:
+#: ⛔ 标题不写「采到了但没写进正文」：HN 那一行 `cited=2`（S38 在正文真被引），
+#: 「没写进正文」对它就是假话，和货 3 ① 要堵的是同一类。缺的确实只有「没写成一段」。
+COLLECTED_HEADING = "## 采到了但没写成段落"
+#: ⛔ 不写「工序」：制造业的词，客户未必立刻对上号；而且这一节除了内部处理步骤，
+#: 还会收「报告·第 N 节」这种没写成的撰写章，「环节」两头都罩得住。
+PROCESS_HEADING = "## 哪些环节没跑完"
 BASIS_HEADING = "## 各表口径"
 CONFIDENCE_HEADING = "## 把握度读数（主张的交叉验证与被引证据等级）"
 LEXICON_HEADING = "## 词表命中参考（只数触发词，不是情感判断）"
 QUOTES_HEADING = "## 代表原声（逐字摘录，按互动量排序）"
 CONTRAST_HEADING = "## 对照实体的评论（只作参照，不计入正文态度表）"
 TIMESPAN_HEADING = "## 证据的时间范围"
-PROGRAM_APPENDIX_HEADINGS = (MISSING_HEADING, BASIS_HEADING, LEXICON_HEADING,
+PROGRAM_APPENDIX_HEADINGS = (MISSING_HEADING, COLLECTED_HEADING, PROCESS_HEADING,
+                             BASIS_HEADING, LEXICON_HEADING,
                              QUOTES_HEADING, SOURCES_HEADING, CONFIDENCE_HEADING,
                              CONTRAST_HEADING, TIMESPAN_HEADING)
 
@@ -249,6 +260,57 @@ def plain_words(text: str) -> str:
     return re.sub(r"(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])", "", out)
 
 
+#: §RPT-7 货 3 ②：口径句是**两用**的——同一段字既进写手提示词（`build_prompt` 把
+#: `tables[*]` 除 name 外整块塞过去，那里它是规矩、一个字不能改），又原样印进
+#: 客户稿的「各表口径」（那里它是说明）。09-18 用户读到的是后者：
+#: 「⛔ 不得把它们写成多数人的看法」「不设它这一格四成条目会凭空消失」
+#: 「正文引它时出处行必须写「等级 C」」——是在客户面前对自己人下指令。
+#:
+#: ⇒ 只在**呈现层**改：改源等于拆掉写手的护栏（`tests/test_quote1_zero_engagement.py`
+#: 就锁着那句原文）。⛔ 逐句改写、不做通用改写——口径句里有真实复核数（30/28 那种），
+#: 一条机械正则扫过去迟早削到数字上。
+_CLIENT_VOICE = (
+    ("⛔ 不得把它们写成多数人的看法、也不得单独拎去当某一方的头号声音。",
+     "它们不代表多数人的看法，也不是某一方的头号声音。"),
+    ("只能说「提及…的条数」，不得说「X% 用户认为」。",
+     "这张表给的是「提及…的条数」，不是「X% 用户认为」。"),
+    ("正文引它时出处行必须写「等级 C」，读者据此把它当例子，不当依据。",
+     "正文引到这几条时，出处行会标出「等级 C」，读者据此把它当例子，不当依据。"),
+    ("不设它这一格四成条目会凭空消失。", "没有这一格，四成条目在表里就看不见了。"),
+)
+#: 内部版本号：客户不需要知道我们的词表/编码规则是第几版，留着只会让人追问「那 v1 呢」。
+#: ⛔ 只削版本尾巴，不动它前面的名字——「模型编码」「固定词表」本来就是读得懂的话，
+#: 换个说法反而是在编。⛔ 也绝不碰句子里的真实读数（30 条复核、28 条一致）。
+_VERSION_TAG = re.compile(
+    r"（v\d+(?:\.\d+)*）|(?<=[\u4e00-\u9fff])\s+v\d+(?:\.\d+)*(?![\d.])")
+#: 兜底：⛔ 是本项目给写手下禁令的记号，客户稿里一个都不该有。逐句改写漏掉的那些
+#: 整句删掉——它对客户没有信息量，留着只会让人看见我们内部怎么管的活。
+_ORDER_CLAUSE = re.compile(r"⛔[^。；]*[。；]?")
+
+
+def client_voice(text: str) -> str:
+    """口径句的**客户版**：给写手的指令改成陈述句，内部版本号削掉。
+
+    ⚠️ 只给附录渲染用。提示词那一头照旧读 `tables[*].basis` 原文，一个字不动。
+    """
+    out = str(text or "")
+    for order, statement in _CLIENT_VOICE:
+        out = out.replace(order, statement)
+    out = _ORDER_CLAUSE.sub("", _VERSION_TAG.sub("", out))
+    # 削掉版本尾巴会留下「固定词表 命中计数」这种中文之间的空格，按 `plain_words`
+    # 同一条规矩收掉——两处口径必须同形。
+    return re.sub(r"(?<=[\u4e00-\u9fff]) +(?=[\u4e00-\u9fff])", "", out)
+
+
+def basis_words(text: str) -> str:
+    """附录里印口径句的唯一一条路：机器词换人话，再把给写手的指令换成陈述句。
+
+    四处渲染 `basis`（各表口径 / 词表命中 / 代表原声 / 对照实体）共用它——
+    同一段字在一份稿里出现两种形态，是本项目现形过的假绿。
+    """
+    return client_voice(plain_words(text))
+
+
 #: 机器 reason → 人话。SKILL 第 7 条明写「用人话改写，不要照抄
 #: `goal-2/ch-3 empty_result` 这种」——既然是照着一张表改写，就没有理由让模型抄，
 #: 抄错了还要被尺子抓。表外的 reason 统一写「原因未记录」（不瞎猜也不泄露机器词）。
@@ -297,22 +359,83 @@ _YIELDED_TAIL = {
 _YIELDED_TAIL_DEFAULT = "这一段没能记成完整的一段，但内容本身没丢"
 
 
+def _yielded_tail(entry: Mapping[str, Any], reason: str) -> str:
+    """「采到 N 条…」后面那半句。
+
+    §RPT-7 货 3 ①：`timeout` 那一支写死「正文未能引用它们」，而 `chapter_rows`
+    早就算好了 `cited`——**有角标真进了正文，这句就是假话**。09-18 真机 HN 那一章
+    `yielded=7 / cited=2`（S38 在正文被引），只因死因记的是 `tool_unavailable`
+    才侥幸没走到这一支。判据落在账本查得到的 `cited` 上，不落在死因上。
+    """
+    if int(entry.get("cited") or 0) > 0:
+        return _YIELDED_TAIL_DEFAULT
+    return _YIELDED_TAIL.get(reason, _YIELDED_TAIL_DEFAULT)
+
+
+#: §RPT-7 货 1：**非采集章**的理由码人话。与 `_MISSING_REASON` 是两套，因为那一套
+#: 每一句都带「采集」——套到一条都不在采的章上（打标签、一致性检查、报告撰写），
+#: 「这一段采集超时没跑完」就是凭空给客户报了一次采集故障。09-18 真机三行全踩这一条。
+#: 章型是闭集（`app/plan/chapters.py:CHAPTER_TYPES`），⛔ 分流按 `chapter_type`，不按章名猜。
+_PROCESS_REASON = {
+    "timeout": "这一步超时没跑完",
+    "empty_result": "这一步正常跑通、没报错，但没有产出内容",
+    "conclusion_invalid": "这一步写出来了但没通过结论校验，未采用",
+    "retry_exhausted": "这一步重试用尽仍未成功",
+    "blocked": "这一步被权限或风控挡住",
+    "tool_unavailable": "这一步用的工具当时接不上（没配好或没连通），没跑完",
+    "quota_exhausted": "这一步用的接口额度用完了，没跑完",
+}
+
+
+#: §RPT-7 货 2：章型（`app/plan/chapters.py:CHAPTER_TYPES` 的 11 项闭集）→ 客户读得懂的说法。
+#:
+#: 09-18 真机：`_chapter_label` 只认 `collection` / `report`，其余一律落
+#: `display_name` 兜底，于是「标签」「一致性检查」——本项目内部的工序名——
+#: 原样印进了给客户的附录。客户读不懂，读懂了也只会看见我们内部怎么排的活。
+#:
+#: ⛔ 这里只按**章型本身的字面含义**说一句，不编库里没有的工序含义：
+#: - `tagging` 的任务原文是「对清洗后的语料按主题维度打标签」（真机 goal-2/ch-4）；
+#: - `audit` 两种活都挂在它名下（`可靠度审计` 给证据评级、`一致性检查` 查同源矛盾），
+#:   所以只能写两者都成立的那句「证据的质量核查」，⛔ 不许挑一种写死；
+#: - `transport` 在 `_KIND_CHAPTER_TYPES` 里根本没有产出方（闭集成员但排不出来），
+#:   编不出它干什么，就让它走兜底，⛔ 不猜。
+_CHAPTER_TYPE_LABEL = {
+    "data_cleaning": "采到的内容的清洗整理",
+    "tagging": "给采到的内容打主题标签",
+    "audit": "证据的质量核查",
+    "cross_validation": "结论的多源交叉核对",
+    "summary": "阶段小结",
+    "excel_generation": "导出成表格文件",
+    "code_execution": "按脚本跑的数据处理",
+}
+#: 认不出章型（闭集外、或产物里这一格是空的）时的说法。⛔ 不退回 `display_name`：
+#: 那正是内部工序名漏出去的那条路。中性但不撒谎——它确实是中间的一道处理。
+_CHAPTER_TYPE_FALLBACK = "中间处理步骤"
+#: 撰写章：`report` 之外，`comparison` 也是（真机 goal-6/ch-4 的 `display_name` 就是
+#: 「报告撰写」，章型记的却是 comparison）。两者都按「报告·第 N 节」写，不是处理步骤。
+_REPORT_KINDS = frozenset({"report", "comparison"})
+
+
 def _chapter_label(entry: Mapping[str, Any], section: str | None,
                    goal_titles: Sequence[str]) -> str:
-    """「缺的是哪一段」：缺的单位是单源子章，不是整个目标——写「渠道（实体）」。"""
+    """「缺的是哪一段」：缺的单位是单源子章，不是整个目标——写「渠道（实体）」。
+
+    §RPT-7 货 2：非采集、非撰写的章按 `chapter_type` 取客户说法，
+    ⛔ 不按章名猜、也不再拿 `display_name` 兜底（内部工序名就是从那儿漏出去的）。
+    """
     platforms = "、".join(str(x) for x in (entry.get("platforms") or []) if x)
     entity = str(entry.get("entity") or "").strip()
     goal_title = str(entry.get("goal_title") or "").strip()
     kind = str(entry.get("chapter_type") or "")
     if kind == "collection" and platforms:
         return f"{platforms}（{entity}）" if entity else platforms
-    if kind == "report":
+    if kind in _REPORT_KINDS:
         head = f"「{goal_title}」的报告" if goal_title else "报告"
         number = section.removeprefix("sec-") if section else ""
         if number.isdigit() and 0 < int(number) <= len(goal_titles):
             return f"{head}·第 {number} 节（{goal_titles[int(number) - 1]}）"
         return head
-    name = str(entry.get("display_name") or "").strip() or "这一段"
+    name = _CHAPTER_TYPE_LABEL.get(kind, _CHAPTER_TYPE_FALLBACK)
     return f"{name}（{goal_title}）" if goal_title else name
 
 
@@ -329,13 +452,17 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
       没写成，正文未能引用它们」（§RPT-3 货 5：旧文案「未纳入本章分析」失实——那些行照常
       评级、照常进平台分布等统计表，真正缺的只是角标）。
       §D-039 之后 timeout 的语义是「超时判 missing、已落库产物不作废」，写「没采到」是假话。
-    不给 `chapters`（老调用方、老产物）行为逐字不变。
+
+    §RPT-7 货 1：一张表变三张，按**账本查得到的两件事**分流，⛔ 不按章名猜——
+    - `yielded > 0`：内容在库里，缺的只是没写成一段 ⇒ `COLLECTED_HEADING`；
+    - `chapter_type != collection`：这一章压根不在采（打标签、一致性检查、报告撰写）
+      ⇒ `PROCESS_HEADING`，理由句走 `_PROCESS_REASON`，一个「采集」字都不带；
+    - 其余（真的是采集章、真的一条没入库）才留在 `MISSING_HEADING`。
+    对不上章的行（源对账那路 `chapter_id=source/<平台>`）章型未知，仍留在原表不猜。
+    不给 `chapters`（老调用方、老产物）行为逐字不变——三张表只有第一张会非空。
     """
     if not missing:
         return f"{MISSING_HEADING}\n\n（本次调研没有缺失的采集段落。）\n"
-    lines = [MISSING_HEADING, "",
-             "（本节由程序按调研过程记录生成。）", "",
-             "| 缺的是哪一段 | 为什么缺 |", "|---|---|"]
     # 段落名用**这一段在采什么**（目标原话），不用 `goal-x/ch-y`——后者是内部切块方式，
     # 读者不需要知道，尺子①也禁。取不到就退成「第 N 段」，两者都不泄露内部编号。
     by_goal = {str(g.get("goal_id")): str(g.get("objective") or "")
@@ -346,19 +473,25 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
     for c in (chapters or []):
         if isinstance(c, Mapping) and str(c.get("goal_title") or "") not in goal_titles:
             goal_titles.append(str(c.get("goal_title") or ""))
+    rows: dict[str, list[str]] = {MISSING_HEADING: [], COLLECTED_HEADING: [],
+                                  PROCESS_HEADING: []}
     for index, item in enumerate(missing, 1):
         goal_id = str(item.get("goal_id") or "")
         chapter_id = str(item.get("chapter_id") or "")
         parent, _, section = chapter_id.partition("/")
         entry = by_chapter.get((goal_id, parent))
         reason = str(item.get("reason") or "").strip()
+        bucket = MISSING_HEADING
         if entry is not None:
             where = plain_words(_chapter_label(entry, section or None, goal_titles))
             yielded = int(entry.get("yielded") or 0)
             if yielded > 0:
+                bucket = COLLECTED_HEADING
                 # ⛔ 不写「采集章」：内部词，尺子①禁（程序生成的文本照样被抓）。
-                why = (f"采到 {yielded} 条，已入库并参与评级与统计；"
-                       + _YIELDED_TAIL.get(reason, _YIELDED_TAIL_DEFAULT))
+                why = f"采到 {yielded} 条，已入库并参与评级与统计；" + _yielded_tail(entry, reason)
+            elif str(entry.get("chapter_type") or "") != "collection":
+                bucket = PROCESS_HEADING
+                why = _PROCESS_REASON.get(reason, "原因未记录")
             else:
                 why = _MISSING_REASON.get(reason, "原因未记录")
         else:
@@ -368,8 +501,30 @@ def missing_table(missing: Sequence[Mapping[str, Any]],
             text = plain_words(objective.strip())
             where = (text[:34] + "…") if len(text) > 34 else text
             why = _MISSING_REASON.get(reason, "原因未记录")
-        lines.append(f"| {where or f'第 {index} 段'} | {why} |")
-    return "\n".join(lines) + "\n"
+        rows[bucket].append(f"| {where or f'第 {index} 段'} | {why} |")
+    blocks = [_missing_block(heading, rows[heading])
+              for heading in (MISSING_HEADING, COLLECTED_HEADING, PROCESS_HEADING)
+              if rows[heading]]
+    return "\n".join(blocks)
+
+
+#: 三张表各自的开头：一句说明 + 表头。⛔ 后两张一个「采集」字都不许有。
+_MISSING_BLOCK_HEAD = {
+    MISSING_HEADING: ("（本节由程序按调研过程记录生成。）", "缺的是哪一段", "为什么缺"),
+    COLLECTED_HEADING: (
+        "（本节由程序按调研过程记录生成。这几段的内容**已经采到、已经入库**，"
+        "也参与了后面的评级与统计；缺的只是没把它单独写成正文里的一段。）",
+        "是哪一段", "采到了多少、缺的是什么"),
+    PROCESS_HEADING: (
+        "（本节由程序按调研过程记录生成。这几段不去外面取内容，"
+        "是拿已经取到的内容往下做的处理步骤。）", "是哪一个环节", "为什么没跑完"),
+}
+
+
+def _missing_block(heading: str, rows: Sequence[str]) -> str:
+    note, left, right = _MISSING_BLOCK_HEAD[heading]
+    return "\n".join([heading, "", note, "", f"| {left} | {right} |", "|---|---|",
+                      *rows]) + "\n"
 
 
 #: 交叉验证结论 → 人话。与 `build_prompt` 里给写手的那张同一套说法，⛔ 不出现 SINGLE/PASS
@@ -557,7 +712,7 @@ def _inject_after_confidence(body: str, line: str) -> str:
 
 def basis_table(tables: Mapping[str, Any]) -> str:
     """各表口径。`basis` 是每张表自己带的字段，照列即可，不必让模型誊抄。"""
-    rows = [(plain_words(str(v.get("title") or k)), plain_words(str(v.get("basis") or "").strip()))
+    rows = [(plain_words(str(v.get("title") or k)), basis_words(str(v.get("basis") or "").strip()))
             for k, v in (tables or {}).items() if isinstance(v, Mapping)]
     if not rows:
         return ""
@@ -595,7 +750,7 @@ def lexicon_reference_table(tables: Mapping[str, Any]) -> str:
     for row in table.get("rows") or []:
         lines.append("| " + " | ".join(
             str(row.get(column, "")).replace("|", "｜") for column in columns) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -668,7 +823,7 @@ def contrast_reference_table(tables: Mapping[str, Any]) -> str:
     for row in table.get("rows") or []:
         marks = "".join(f"[{m}]" for m in (row.get("marks") or [])) or "—"
         lines.append("| " + " | ".join([*(_cell(row.get(c, "")) for c in columns), marks]) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -692,11 +847,24 @@ def quotes_reference_table(tables: Mapping[str, Any]) -> str:
              "更不能把某一句写成「多数人的看法」。）", "",
              "| " + " | ".join([*columns, "角标"]) + " |",
              "|" + "---|" * (len(columns) + 1)]
-    for row in table.get("rows") or []:
+    rows = list(table.get("rows") or [])
+    for row in rows:
         cells = [_cell(row.get(column, "")) for column in columns]
         marks = "".join(f"[{m}]" for m in (row.get("marks") or [])) or "—"
         lines.append("| " + " | ".join([*cells, marks]) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{plain_words(str(table.get('basis') or ''))}"]
+    # §RPT-7 货 4：**这张表的样本量按表内行数写**，不按 `n`。
+    # 真机 r-3b3482ca7f8b：`n=6`、表里 4 行——`coding_tables` 的 `n` 数的是挑出来的
+    # 那 6 条，而 `rows` 又过了一道「没角标就不进表」的筛（那一道在本包禁区里，
+    # ⛔ 不动挑选逻辑）。于是 4 行的表底下写着「样本量 6 条」，读者数得出来对不上。
+    # 以行数为准的依据：这张表**一行就是一条样本**（别的附录表不是——词表命中表的
+    # `n` 是证据条数、行是主题，所以那几张照旧用 `n`）。表尾紧挨着行，它说的
+    # 必须是这几行。差额不抹掉，补一句交代去向——只说账本查得到的事实（没有角标），
+    # ⛔ 不认领挑选逻辑。
+    total = table.get("n")
+    dropped = (int(total) - len(rows)) if isinstance(total, int) else 0
+    gap = f"（另有 {dropped} 条入选原声没有可引用的角标，未列入本表）" if dropped > 0 else ""
+    lines += ["", f"样本量 {len(rows)} 条{gap}｜口径："
+                  f"{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
@@ -783,7 +951,7 @@ def _work_view(data: Mapping[str, Any], report_text: str) -> str:
                             chapters=data.get("chapters") or []) if view.get("missing") else ""
     body = "\n\n".join(str(s.get("markdown") or "") for s in view.get("sections") or [])
     return (f"### 工作稿标题\n{data.get('title')}\n\n### 工作稿的结论行（原样）\n{conclusions}\n\n"
-            f"### 哪些没采到（程序已写成人话，原样挂附录，你不必誊抄）\n{missing or '（无）'}\n\n"
+            f"### 缺口清单（程序已写成人话，原样挂附录，你不必誊抄）\n{missing or '（无）'}\n\n"
             f"### 工作稿正文全文\n{body}")
 
 
