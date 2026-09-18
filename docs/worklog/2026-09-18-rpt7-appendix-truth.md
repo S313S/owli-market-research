@@ -192,3 +192,9 @@ assert '另有 2 条' in md
 不 push、不合 main；没停/重启任何端口；没删任何库/runs/快照/夹具；
 没改凭证与钱闸；没碰 8980 与 `../Owli-wx1`；`../Owli-src5` 只读
 （近 2 小时内该树零文件改动，已核）。`git add` 只加自己的路径。
+
+## 附：SKILL 措辞同步（提货单 §四「若措辞要同步」）
+
+三处写手侧的描述句还按「一张表」写，改完不同步会让写手以为附录少了两节：
+- `consulting/SKILL.md:161`、`_shared/writing-rules.md:372`、`_shared/audit-checklist.md:30`。
+只改**描述句**（程序接哪几块），⛔ 没动任何写作规则、篇幅预算或门禁。
