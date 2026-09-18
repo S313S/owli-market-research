@@ -290,6 +290,50 @@ def test_the_gate_is_silent_without_a_coding_table(tmp_path):
         "⑮ 归因只引该格内的角标"]
 
 
+# ── §D-084：主题名落在「被否定掉的那半句」里，不算在给这一格归因 ──────────
+#: 真机第三轮咨询体（r-3b3482ca7f8b × consulting）第 35 行的原话。「回答质量」是
+#: 「不再只是 X，而是 Y」里被否定掉的 X，整段讲的是媒体定位表，没有一个字在解释
+#: 「回答质量」这一格的编码语义——词面撞上「而是」+ 主题名就判红是假红。
+REAL_NEGATED_HALF = ("这张表说明，豆包的媒体参照系已经变化："
+                     "衡量它的不再只是回答质量或模型强弱，而是能否接住一项完整工作。")
+#: 那一格的真机读数：回答质量 20 条（正 12 / 负 5 / 混合 2 / 中 1），只有 4 条带角标，
+#: 覆盖 4/20 < 1/3 —— 所以 base 上这句必然踩「只准写条数」那一支。
+QUALITY = _coded([{"主题": "回答质量", "态度": "正", "条数": 12, "marks": ["S01"]},
+                  {"主题": "回答质量", "态度": "负", "条数": 5, "marks": []},
+                  {"主题": "回答质量", "态度": "中", "条数": 1, "marks": []},
+                  {"主题": "回答质量", "态度": "混合", "条数": 2, "marks": ["S02"]}])
+
+
+def test_a_topic_only_in_the_negated_half_is_not_attribution(tmp_path):
+    """真机假红：被否定掉的那一半不是这句话的主张，句子没在解释这一格。"""
+    assert not _run(tmp_path, GOOD.replace("正文解读[S01]。", REAL_NEGATED_HALF),
+                    **QUALITY)["⑮ 归因只引该格内的角标"]
+
+
+def test_the_0907_symptom_stays_red(tmp_path):
+    """09-07 原病象：19 条负向只有 1 条进池，照那 1 条解读整格（「嫌豆包太便宜」）。"""
+    line = "价格与付费 19 条负向，其实是嫌豆包太便宜[S02]。"
+    problems = _run(tmp_path, GOOD.replace("正文解读[S01]。", line), **THIN)[
+        "⑮ 归因只引该格内的角标"]
+    assert problems and "未进引用" in problems[0]
+
+
+def test_a_negated_topic_that_still_names_the_cell_stays_red(tmp_path):
+    """豁免不是「把主题名挪到否定句里就放行」：句里还念着这一格的态度与条数，照旧管。"""
+    line = "这 19 条负向说的并非价格与付费太贵，而是嫌豆包收费变了[S02]。"
+    problems = _run(tmp_path, GOOD.replace("正文解读[S01]。", line), **THIN)[
+        "⑮ 归因只引该格内的角标"]
+    assert problems and "未进引用" in problems[0]
+
+
+def test_the_asserted_half_after_the_pivot_is_still_judged(tmp_path):
+    """被否定的只有左半句；「而是」右边才是这句的主张，那里的主题名照旧上第二支。"""
+    line = "用户抱怨的不是速度与稳定，而是价格与付费在变着法涨价[S99]。"
+    problems = _run(tmp_path, GOOD.replace("正文解读[S01]。", line), **THICK)[
+        "⑮ 归因只引该格内的角标"]
+    assert problems and "不在这一格" in problems[0]
+
+
 # ── 货 7（评审 #12）：一个表格子里最多 3 个角标 ──────────────────────────
 def test_a_cell_stuffed_with_marks_is_red(tmp_path):
     """真机截图坐实：竞品矩阵每格 9–13 个同样的角标，整张表横着读不了。"""
