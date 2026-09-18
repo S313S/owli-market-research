@@ -114,13 +114,22 @@ def test_not_collected_table_keeps_only_the_real_zero_yield_collection_gap():
     assert "确实没有相关内容" in blocks[MISSING_HEADING][0]
 
 
+def _section(md: str, heading: str) -> str:
+    """整节原文（说明句 + 表），不只是表格行——说明句也是印给客户的字。"""
+    start = md.index(heading)
+    end = md.find("\n## ", start + len(heading))
+    return md[start:end if end > 0 else len(md)]
+
+
 def test_non_collection_chapters_move_out_and_drop_the_collection_wording():
-    """标签章、一致性检查章一条都不在采，不许套「这一段采集超时没跑完」。"""
+    """标签章、一致性检查章一条都不在采，不许套「这一段采集超时没跑完」。
+
+    量的是**整节**，不只是表格行：说明句写「这几段不在采集范围内」照样是在
+    客户眼前提「采集」——他刚被那张表误导过一次，这两个字一出现就又要读一遍。
+    """
     md = missing_table(MISSING, OBJECTIVES, chapters=_chapters())
-    blocks = _blocks(md)
-    assert len(blocks[PROCESS_HEADING]) == 3
-    assert "采集" not in "\n".join(blocks[PROCESS_HEADING])
-    assert all("采集" not in row for row in blocks[COLLECTED_HEADING])
+    assert len(_blocks(md)[PROCESS_HEADING]) == 3
+    assert "采集" not in _section(md, PROCESS_HEADING), _section(md, PROCESS_HEADING)
 
 
 def test_three_blocks_come_in_a_fixed_order_and_empty_ones_are_not_printed():
@@ -286,3 +295,56 @@ def test_quotes_tail_gets_the_same_scrub_as_the_basis_table():
                  rows=[{"主题": "功能与能力", "marks": [96]}])
     md = quotes_reference_table({"quotes": table})
     assert "⛔" not in md and "必须写「等级 C」" not in md, md
+
+
+# ── 货 4：原声表表尾的样本量要跟表内行数对得上 ────────────────────────────
+#: 真机形状（r-3b3482ca7f8b）：`quotes.n = 6`、`rows` 只有 4 行——
+#: `coding_tables` 出表时 `n=len(data["quotes"])` 数的是**挑出来的 6 条**，
+#: 而 `rows` 又过了一道「没角标就不进表」的筛。表尾于是在 4 行表下写「样本量 6 条」。
+def _quotes_table(rows: int = 4, n: int = 6) -> dict:
+    return {"quotes": {
+        "title": "UGC 代表原声（每格按互动量取前 3）", "n": n,
+        "columns": ["主题", "态度", "原声"],
+        "rows": [{"主题": "功能与能力", "态度": "正", "原声": f"第 {i} 句",
+                  "marks": [96 + i]} for i in range(rows)],
+        "basis": "从原文逐字摘出、程序校验过是正文子串的原声。"}}
+
+
+def test_quotes_tail_counts_the_rows_it_sits_under():
+    from app.report.polish.run import quotes_reference_table
+
+    md = quotes_reference_table(_quotes_table())
+    assert "样本量 4 条" in md, md
+    assert "样本量 6 条" not in md, md
+
+
+def test_quotes_tail_says_where_the_rest_went():
+    """⛔ 不许把差额悄悄抹掉：没进表的那几条要交代一句，且不认领挑选逻辑。"""
+    from app.report.polish.run import quotes_reference_table
+
+    md = quotes_reference_table(_quotes_table())
+    assert "另有 2 条" in md and "角标" in md, md
+    # 不多不少：表内行数与表尾一致时不许多出这半句。
+    assert "另有" not in quotes_reference_table(_quotes_table(rows=4, n=4))
+
+
+def test_quotes_rows_themselves_are_untouched():
+    """⛔ 不许改 `quotes` 的挑选逻辑：几行还是几行，顺序也不动。"""
+    from app.report.polish.run import quotes_reference_table
+
+    md = quotes_reference_table(_quotes_table())
+    body = [line for line in md.splitlines()
+            if line.startswith("| 功能与能力")]
+    assert len(body) == 4
+    assert [line.split("|")[3].strip() for line in body] == [f"第 {i} 句" for i in range(4)]
+
+
+def test_the_other_appendix_tables_keep_their_own_sample_size():
+    """词表命中表的 `n` 数的是证据条数、行是主题——它跟行数本来就不该相等。"""
+    from app.report.polish.run import lexicon_reference_table
+
+    md = lexicon_reference_table({"topic_polarity": {
+        "title": "主题提及量", "n": 942, "columns": ["主题", "条数"],
+        "rows": [{"主题": "价格", "条数": 17}, {"主题": "速度", "条数": 9}],
+        "basis": "固定词表命中计数。"}})
+    assert "样本量 942 条" in md, md

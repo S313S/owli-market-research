@@ -516,8 +516,8 @@ _MISSING_BLOCK_HEAD = {
         "也参与了后面的评级与统计；缺的只是没把它单独写成正文里的一段。）",
         "是哪一段", "采到了多少、缺的是什么"),
     PROCESS_HEADING: (
-        "（本节由程序按调研过程记录生成。这几段不在采集范围内，"
-        "是拿已经采到的内容往下做的处理步骤。）", "是哪一个环节", "为什么没跑完"),
+        "（本节由程序按调研过程记录生成。这几段不去外面取内容，"
+        "是拿已经取到的内容往下做的处理步骤。）", "是哪一个环节", "为什么没跑完"),
 }
 
 
@@ -847,11 +847,24 @@ def quotes_reference_table(tables: Mapping[str, Any]) -> str:
              "更不能把某一句写成「多数人的看法」。）", "",
              "| " + " | ".join([*columns, "角标"]) + " |",
              "|" + "---|" * (len(columns) + 1)]
-    for row in table.get("rows") or []:
+    rows = list(table.get("rows") or [])
+    for row in rows:
         cells = [_cell(row.get(column, "")) for column in columns]
         marks = "".join(f"[{m}]" for m in (row.get("marks") or [])) or "—"
         lines.append("| " + " | ".join([*cells, marks]) + " |")
-    lines += ["", f"样本量 {table.get('n')} 条｜口径：{basis_words(str(table.get('basis') or ''))}"]
+    # §RPT-7 货 4：**这张表的样本量按表内行数写**，不按 `n`。
+    # 真机 r-3b3482ca7f8b：`n=6`、表里 4 行——`coding_tables` 的 `n` 数的是挑出来的
+    # 那 6 条，而 `rows` 又过了一道「没角标就不进表」的筛（那一道在本包禁区里，
+    # ⛔ 不动挑选逻辑）。于是 4 行的表底下写着「样本量 6 条」，读者数得出来对不上。
+    # 以行数为准的依据：这张表**一行就是一条样本**（别的附录表不是——词表命中表的
+    # `n` 是证据条数、行是主题，所以那几张照旧用 `n`）。表尾紧挨着行，它说的
+    # 必须是这几行。差额不抹掉，补一句交代去向——只说账本查得到的事实（没有角标），
+    # ⛔ 不认领挑选逻辑。
+    total = table.get("n")
+    dropped = (int(total) - len(rows)) if isinstance(total, int) else 0
+    gap = f"（另有 {dropped} 条入选原声没有可引用的角标，未列入本表）" if dropped > 0 else ""
+    lines += ["", f"样本量 {len(rows)} 条{gap}｜口径："
+                  f"{basis_words(str(table.get('basis') or ''))}"]
     return "\n".join(lines) + "\n"
 
 
